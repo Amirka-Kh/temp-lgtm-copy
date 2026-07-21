@@ -301,8 +301,8 @@ def test_review_issues_correct_issues_client_according_to_cli(
 @pytest.mark.parametrize(
     ("format", "expected_output"),
     [
-        ("pretty", "No files to review"),
-        ("markdown", "No files to review"),
+        ("pretty", "Нет файлов для review"),
+        ("markdown", "Нет файлов для review"),
         ("json", '"review_response": null'),
     ],
 )

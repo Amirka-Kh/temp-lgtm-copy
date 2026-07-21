@@ -24,6 +24,7 @@ from lgtm_ai.formatters.base import Formatter
 from lgtm_ai.formatters.json import JsonFormatter
 from lgtm_ai.formatters.markdown import MarkDownFormatter
 from lgtm_ai.formatters.pretty import PrettyFormatter
+from lgtm_ai.discuss import DiscussClient
 from lgtm_ai.git_client.base import GitClient
 from lgtm_ai.git_client.utils import get_git_client
 from lgtm_ai.jira.jira import JiraIssuesClient
@@ -154,6 +155,15 @@ def _common_options[**P, T](func: Callable[P, T]) -> Callable[P, T]:
     default=None,
     help="If reviewing a local repository, what to compare against (branch, commit, or HEAD for working dir). Default: HEAD",
 )
+@click.option(
+    "--context",
+    "additional_context",
+    multiple=True,
+    metavar="PROMPT:FILE_URL",
+    help="Additional context file or URL for the LLM review. Can be a repo-relative path or URL. "
+         "Repeat to add multiple contexts. Use format 'prompt:path'. If no colon is provided, "
+         "the path/URL itself becomes the prompt.",
+)
 def review(target: PRUrl | LocalRepository, config: str | None, verbose: int, **config_kwargs: object) -> None:
     """Review a Pull Request or local repository using AI.
 
@@ -278,6 +288,79 @@ def guide(
         logger.info("Publishing review guide to git service")
         git_client.publish_guide(pr_url=target, guide=guide)
         logger.info("Review Guide published successfully")
+
+
+@click.argument("target", required=True, callback=TargetParser(allow_git_repo=False))
+@cli.command()
+@_common_options
+@click.option("--discuss-id", required=True, help="The ID (SHA hash) of the discussion thread to query.")
+@click.option("--message", required=True, help="Your question about the review note in this discussion.")
+def discuss(
+    target: PRUrl,
+    config: str | None,
+    verbose: int,
+    discuss_id: str,
+    message: str,
+    **config_kwargs: object,
+) -> None:
+    """Ask an AI question about a specific review discussion on a Merge Request.
+
+    TARGET is the URL of the pull/merge request containing the discussion.
+
+    The command fetches the discussion thread identified by --discuss-id,
+    builds a prompt from the original review note and code context, sends it
+    to the AI model, and optionally posts the AI's answer back as a reply.
+    """
+    _set_logging_level(logger, verbose)
+    if isinstance(target, LocalRepository):
+        logger.error("Discuss command requires a Pull/Merge Request URL, not a local repository.")
+        raise click.Abort()
+
+    from lgtm_ai.base.schemas import PRSource
+    from lgtm_ai.git_client.exceptions import PublishGuideError
+
+    logger.info("lgtm-ai version: %s", __version__)
+    logger.debug("Parsed PR URL: %s", target)
+    logger.debug("target type=%r target.source=%r", type(target), getattr(target, "source", "<NO SOURCE ATTR>"))
+    logger.info("Starting discuss for MR %s, discussion ID: %s", target.full_url, discuss_id)
+
+    resolved_config = ConfigHandler(
+        cli_args=CliOptions(**config_kwargs),
+        config_file=config,
+    ).resolve_config(target)
+
+    agent_extra_settings = AgentSettings(retries=resolved_config.ai_retries)
+    logger.debug("get_git_client called with source=%r", target.source)
+    git_client = get_git_client(
+        source=target.source, token=resolved_config.git_api_key, formatter=MarkDownFormatter(), url=target.base_url
+    )
+
+    discuss_client = DiscussClient(
+        git_client=git_client,
+        model_name=resolved_config.model,
+        api_key=resolved_config.ai_api_key,
+        model_url=resolved_config.model_url,
+    )
+
+    formatter, printer = _get_formatter_and_printer(resolved_config.output_format)
+
+    try:
+        response = discuss_client.discuss(pr_url=target, discussion_id=discuss_id, user_message=message)
+    except Exception as err:
+        logger.error("Failed to generate AI response for discussion: %s", err)
+        printer(f"Error: {err}")
+        raise click.Abort()
+
+    if not resolved_config.silent:
+        printer(response)
+
+    if resolved_config.publish and git_client:
+        try:
+            discuss_client.reply_to_discussion(pr_url=target, discussion_id=discuss_id, response=response)
+            logger.info("AI reply posted to discussion '%s' successfully", discuss_id)
+        except PublishGuideError as err:
+            logger.warning("Failed to publish AI reply to discussion: %s", err)
+            printer(f"Warning: Could not post reply to discussion: {err}")
 
 
 def _set_logging_level(logger: logging.Logger, verbose: int) -> None:

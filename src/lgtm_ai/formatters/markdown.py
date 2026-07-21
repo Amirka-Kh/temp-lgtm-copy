@@ -76,7 +76,7 @@ class MarkDownFormatter(Formatter[str]):
         )
 
     def empty_review_message(self) -> str:
-        return "> ⚠️ No files to review (all files excluded by provided configuration)."
+        return "> ⚠️ Нет файлов для review: все файлы исключены текущей конфигурацией."
 
     def empty_guide_message(self) -> str:
         return "> ⚠️ No files to generate a guide for (all files excluded by provided configuration)."

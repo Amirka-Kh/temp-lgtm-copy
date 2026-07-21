@@ -330,3 +330,162 @@ def test_issues_jira_missing_user() -> None:
     )
     with pytest.raises(InvalidOptionsError, match="issues_user is required for Jira"):
         handler.resolve_config(target)
+
+
+# --context CLI argument tests
+
+
+class TestAdditionalContextParsing:
+    """Tests for ConfigHandler._parse_additional_context()."""
+
+    def test_parse_prompt_colon_path(self) -> None:
+        result = ConfigHandler._parse_additional_context(("Style guide:./docs/style.md",))
+        assert result == [("Style guide", "./docs/style.md")]
+
+    def test_parse_path_with_colon_in_path_windows(self) -> None:
+        """Paths containing colons (e.g. Windows drive letters) should only split on first colon."""
+        result = ConfigHandler._parse_additional_context(("Guidelines:C:\\projects\\guide.txt",))
+        assert result == [("Guidelines", "C:\\projects\\guide.txt")]
+
+    def test_parse_url_with_colon(self) -> None:
+        """HTTP URLs with :// should split correctly on first colon."""
+        result = ConfigHandler._parse_additional_context(("Docs:http://example.com/guide.md",))
+        assert result == [("Docs", "http://example.com/guide.md")]
+
+    def test_parse_no_colon_auto_prompt(self) -> None:
+        """Paths without colon should get auto-generated prompt."""
+        result = ConfigHandler._parse_additional_context(("./docs/style.md",))
+        assert result == [("Additional context from ./docs/style.md", "./docs/style.md")]
+
+    def test_parse_multiple_entries(self) -> None:
+        result = ConfigHandler._parse_additional_context(
+            (
+                "Style guide:./docs/style.md",
+                "Architecture:./docs/arch.md",
+                "Just a path",
+            )
+        )
+        assert len(result) == 3
+        assert result[0] == ("Style guide", "./docs/style.md")
+        assert result[1] == ("Architecture", "./docs/arch.md")
+        assert result[2] == ("Additional context from Just a path", "Just a path")
+
+    def test_parse_empty_string(self) -> None:
+        result = ConfigHandler._parse_additional_context(("",))
+        assert result == [("Additional context from ", "")]
+
+    def test_parse_prompt_with_spaces_around_colon(self) -> None:
+        """Prompt is stripped of trailing spaces; path keeps leading spaces."""
+        result = ConfigHandler._parse_additional_context(("Style guide : ./docs/style.md",))
+        assert result == [("Style guide", " ./docs/style.md")]
+
+
+class TestCliAdditionalContextMerge:
+    """Tests for CLI additional_context merging with config-file contexts."""
+
+    @pytest.mark.usefixtures("inject_env_secrets")
+    def test_cli_contexts_only(self) -> None:
+        handler = ConfigHandler(
+            cli_args=CliOptions(additional_context=("Style guide:./docs/style.md",)),
+            config_file=None,
+        )
+        config = handler.resolve_config(target)
+        assert len(config.additional_context) == 1
+        assert config.additional_context[0].prompt == "Style guide"
+        assert config.additional_context[0].file_url == "./docs/style.md"
+
+    @pytest.mark.usefixtures("inject_env_secrets")
+    def test_cli_contexts_auto_prompt(self) -> None:
+        handler = ConfigHandler(
+            cli_args=CliOptions(additional_context=("./docs/style.md",)),
+            config_file=None,
+        )
+        config = handler.resolve_config(target)
+        assert len(config.additional_context) == 1
+        assert config.additional_context[0].prompt == "Additional context from ./docs/style.md"
+        assert config.additional_context[0].file_url == "./docs/style.md"
+
+    @pytest.mark.usefixtures("inject_env_secrets")
+    def test_cli_contexts_merged_with_config(self, pyproject_additional_context_file: str) -> None:
+        """CLI and config-file contexts should both be present."""
+        handler = ConfigHandler(
+            cli_args=CliOptions(additional_context=("CLI context:./docs/cli.md",)),
+            config_file=pyproject_additional_context_file,
+        )
+        config = handler.resolve_config(target)
+        assert len(config.additional_context) == 3
+
+        # Config-file contexts come first
+        assert config.additional_context[0].prompt == "Architecture guidelines"
+        assert config.additional_context[1].prompt == "Testing conventions"
+
+        # CLI contexts appended after
+        assert config.additional_context[2].prompt == "CLI context"
+        assert config.additional_context[2].file_url == "./docs/cli.md"
+
+    @pytest.mark.usefixtures("inject_env_secrets")
+    def test_multiple_cli_contexts_merged_with_config(self, pyproject_additional_context_file: str) -> None:
+        """Multiple CLI --context flags merge correctly."""
+        handler = ConfigHandler(
+            cli_args=CliOptions(
+                additional_context=(
+                    "CLI one:./docs/one.md",
+                    "CLI two:./docs/two.md",
+                )
+            ),
+            config_file=pyproject_additional_context_file,
+        )
+        config = handler.resolve_config(target)
+        assert len(config.additional_context) == 4
+
+        # Config-file contexts first (2 entries)
+        assert config.additional_context[0].file_url == "docs/architecture.md"
+        assert config.additional_context[1].prompt == "Testing conventions"
+
+        # CLI contexts appended (2 entries)
+        assert config.additional_context[2].prompt == "CLI one"
+        assert config.additional_context[3].prompt == "CLI two"
+
+    @pytest.mark.usefixtures("inject_env_secrets")
+    def test_no_cli_contexts_uses_config_only(self, pyproject_additional_context_file: str) -> None:
+        """Without CLI contexts, only config-file contexts are used."""
+        handler = ConfigHandler(
+            cli_args=CliOptions(),
+            config_file=pyproject_additional_context_file,
+        )
+        config = handler.resolve_config(target)
+        assert len(config.additional_context) == 2
+
+    @pytest.mark.usefixtures("inject_env_secrets")
+    def test_cli_none_no_merge(self) -> None:
+        """When CliOptions has no additional_context (None), no merge happens."""
+        handler = ConfigHandler(
+            cli_args=CliOptions(additional_context=None),
+            config_file=None,
+        )
+        config = handler.resolve_config(target)
+        assert len(config.additional_context) == 0
+
+    @pytest.mark.usefixtures("inject_env_secrets")
+    def test_cli_empty_tuple_no_merge(self) -> None:
+        """When CliOptions has empty tuple, no merge happens (Click returns () when flag not used)."""
+        handler = ConfigHandler(
+            cli_args=CliOptions(additional_context=()),
+            config_file=None,
+        )
+        config = handler.resolve_config(target)
+        assert len(config.additional_context) == 0
+
+
+class TestCliOptionsAdditionalContext:
+    """Tests for CliOptions.additional_context field serialization."""
+
+    def test_cli_options_serializes_additional_context(self) -> None:
+        opts = CliOptions(additional_context=("prompt:path.md",))
+        dumped = opts.model_dump(exclude_none=True)
+        assert dumped["additional_context"] == ("prompt:path.md",)
+
+    def test_cli_options_excludes_none_additional_context(self) -> None:
+        opts = CliOptions()
+        dumped = opts.model_dump(exclude_none=True)
+        assert "additional_context" not in dumped

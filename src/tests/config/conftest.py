@@ -108,6 +108,26 @@ def toml_with_some_issues_configs(tmp_path: Path) -> Iterator[str]:
 
 
 @pytest.fixture
+def pyproject_additional_context_file(tmp_path: Path) -> Iterator[str]:
+    """Pyproject.toml with [[additional_context]] entries."""
+    pyproject_toml = tmp_path / "pyproject.toml"
+    data = """
+[tool.lgtm]
+technologies = ["rust", "cpp"]
+
+[[tool.lgtm.additional_context]]
+file_url = "docs/architecture.md"
+prompt = "Architecture guidelines"
+
+[[tool.lgtm.additional_context]]
+prompt = "Testing conventions"
+context = "Use pytest fixtures for setup"
+"""
+    with create_tmp_file(pyproject_toml, data) as tmp_file:
+        yield tmp_file
+
+
+@pytest.fixture
 def inject_env_secrets() -> Iterator[None]:
     # Backup a copy of the current environment
     original_env = copy.deepcopy(os.environ)

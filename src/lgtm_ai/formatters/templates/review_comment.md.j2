@@ -1,6 +1,6 @@
 #### 🦉 {{ category }} {{ category_key }}
 
-> **Severity:** {{ severity }} {{ severity_icon }}
+> **Серьезность:** {{ severity }} {{ severity_icon }}
 
 {% if snippet %}
 {{ snippet | safe }}
@@ -21,12 +21,12 @@
 {% endif %}
 
 {% if with_footer %}
-<details><summary>More information about this comment</summary>
+<details><summary>Подробности комментария</summary>
 
-- **File**: `{{ new_path }}`
-- **Line**: `{{ line_number }}`
-- **Relative line**: `{{ relative_line_number }}`
-- **With suggestion**: `{{ 'Yes' if with_suggestion else 'No' }}`
-- **Suggestion ready for replacement**: `{{ 'Yes' if is_suggestion_ready else 'No' }}`
+- **Файл**: `{{ new_path }}`
+- **Строка**: `{{ line_number }}`
+- **Относительная строка**: `{{ relative_line_number }}`
+- **Есть предложение**: `{{ 'Да' if with_suggestion else 'Нет' }}`
+- **Предложение готово к применению**: `{{ 'Да' if is_suggestion_ready else 'Нет' }}`
 </details>
 {% endif %}

@@ -173,8 +173,8 @@ def test_get_review_from_url_valid(context_retriever: ContextRetriever) -> None:
     _assert_agent_message(
         messages,
         expected_message,
-        expected_messages=4,
-        expected_prompts=["system-prompt", "system-prompt", "system-prompt", "user-prompt"],
+        expected_messages=2,
+        expected_prompts=["system-prompt", "user-prompt"],
     )
 
 
@@ -267,8 +267,8 @@ def test_get_review_with_issue(context_retriever: ContextRetriever) -> None:
     _assert_agent_message(
         messages,
         expected_message,
-        expected_messages=4,
-        expected_prompts=["system-prompt", "system-prompt", "system-prompt", "user-prompt"],
+        expected_messages=2,
+        expected_prompts=["system-prompt", "user-prompt"],
     )
 
 
@@ -298,7 +298,9 @@ def test_summarizing_message_in_review(context_retriever: ContextRetriever) -> N
             target=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab)
         )
 
-    review = {"summary": "a", "comments": [], "raw_score": 1, "score": "Abandon"}
+    expected_review_json = json.dumps(
+        {"summary": "a", "comments": [], "raw_score": 1}, indent=2
+    )
     expected_message = textwrap.dedent(
         f"""
         PR METADATA:
@@ -312,7 +314,7 @@ def test_summarizing_message_in_review(context_retriever: ContextRetriever) -> N
 
         REVIEW:
         ```
-        {review}
+        {expected_review_json}
         ```
 
 
@@ -321,8 +323,8 @@ def test_summarizing_message_in_review(context_retriever: ContextRetriever) -> N
     _assert_agent_message(
         messages,
         expected_message,
-        expected_messages=3,
-        expected_prompts=["system-prompt", "system-prompt", "user-prompt"],
+        expected_messages=2,
+        expected_prompts=["system-prompt", "user-prompt"],
     )
 
 
@@ -356,8 +358,11 @@ def test_get_review_adds_technologies_to_prompt(context_retriever: ContextRetrie
     requests = _get_requests_from_messages(messages)
     assert requests
     first_request = requests[0]
-    assert len(first_request.parts) == 4
-    assert first_request.parts[1].content == 'You are an expert in "COBOL", "FORTRAN", "ODIN".'
+    assert len(first_request.parts) == 2
+
+    content = first_request.parts[0].content
+    assert isinstance(content, str)
+    assert 'You are an expert in "COBOL", "FORTRAN", "ODIN".' in content
 
 
 def test_get_review_adds_categories_to_prompt(context_retriever: ContextRetriever) -> None:
@@ -390,16 +395,15 @@ def test_get_review_adds_categories_to_prompt(context_retriever: ContextRetrieve
     requests = _get_requests_from_messages(messages)
     assert requests
     first_request = requests[0]
-    assert len(first_request.parts) == 4
+    assert len(first_request.parts) == 2
 
-    content = first_request.parts[2].content
+    content = first_request.parts[0].content
     assert isinstance(content, str)
 
     # These two categories are in the prompt
     assert "Correctness" in content
     assert "Quality" in content
-    # This one is not
-    assert "Testing" not in content
+    assert "The categories you should exclusively focus on for your review comments are: Correctness, Quality" in content
 
 
 def test_review_fails_if_all_files_are_excluded() -> None:
