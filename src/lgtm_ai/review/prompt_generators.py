@@ -57,7 +57,7 @@ class PromptGenerator:
         return template.render(
             metadata=self.pr_metadata,
             diff=self._serialize_pr_diff(pr_diff),
-            review=raw_review.model_dump(),
+            review=raw_review.model_dump_json(indent=2),
         )
 
     def generate_guide_prompt(

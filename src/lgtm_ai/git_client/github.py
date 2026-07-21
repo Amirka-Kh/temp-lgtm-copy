@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import github
 from lgtm_ai.ai.schemas import CodeSuggestionOffset, Review, ReviewComment, ReviewGuide
 from lgtm_ai.base.schemas import PRUrl
+from lgtm_ai.discuss.prompt import DiscussionNote, DiscussionThread
 from lgtm_ai.formatters.base import Formatter
 from lgtm_ai.git.exceptions import GitDiffParseError
 from lgtm_ai.git.parser import DiffFileMetadata, DiffResult, parse_diff_patch
@@ -179,6 +180,33 @@ class GitHubClient(GitClient):
             decoded_content.append(decoded_chunk_content)
         return "".join(decoded_content)
 
+    def get_discussion(self, pr_url: PRUrl, discussion_id: str) -> DiscussionThread:
+        """Fetch a specific review comment (GitHub's equivalent of a GitLab discussion).
+
+        Returns a DiscussionThread with the comment and code context.
+        """
+        try:
+            pr = _get_pr(self.client, pr_url)
+            comment = pr.get_comment(discussion_id)
+        except github.GithubException as err:
+            logger.error("Failed to retrieve review comment %d from PR %s", discussion_id, pr_url.full_url)
+            raise
+
+        author = comment.user.login if comment.user else "Unknown"
+        created_at = str(comment.created_at) if comment.created_at else "unknown"
+        body = comment.body or ""
+
+        notes = [DiscussionNote(body, author, created_at)]
+
+        file_path: str | None = getattr(comment, "path", None)
+        line_number: int | None = getattr(comment, "line", None)
+
+        # Get full file content for complete context (cross-references, calls, etc.)
+        file_content: str | None = None
+        if file_path:
+            file_content = self.get_file_contents(pr_url, file_path, ContextBranch.source)
+
+        return DiscussionThread(notes, file_path, line_number, file_content)
 
 @lru_cache(maxsize=64)
 def _get_repo(client: github.Github, repo_path: str) -> github.Repository.Repository:

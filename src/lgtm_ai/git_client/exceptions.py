@@ -32,8 +32,8 @@ class PublishReviewError(LGTMException):
 class PublishGuideError(LGTMException):
     message = "Failed to publish the review guide"
 
-    def __init__(self) -> None:
-        super().__init__(self.message)
+    def __init__(self, msg: str | None = None) -> None:
+        super().__init__(msg or self.message)
 
 
 class InvalidGitAuthError(LGTMException):

@@ -82,13 +82,11 @@ def get_reviewer_agent_with_settings(
 ) -> Agent[ReviewerDeps, ReviewResponse]:
     extra_settings = _process_extra_settings(agent_settings)
     agent = Agent(
-        system_prompt=REVIEWER_SYSTEM_PROMPT,
         deps_type=ReviewerDeps,
         output_type=ReviewResponse,
         **extra_settings,
     )
-    agent.system_prompt(get_pr_technologies)
-    agent.system_prompt(get_comment_categories)
+    agent.system_prompt(get_reviewer_system_prompt)
     return agent
 
 
@@ -97,12 +95,11 @@ def get_summarizing_agent_with_settings(
 ) -> Agent[SummarizingDeps, ReviewResponse]:
     extra_settings = _process_extra_settings(agent_settings)
     agent = Agent(
-        system_prompt=SUMMARIZING_SYSTEM_PROMPT,
         deps_type=SummarizingDeps,
         output_type=ReviewResponse,
         **extra_settings,
     )
-    agent.system_prompt(get_summarizing_categories)
+    agent.system_prompt(get_summarizing_system_prompt)
     return agent
 
 
@@ -136,6 +133,16 @@ def get_comment_categories(ctx: RunContext[ReviewerDeps]) -> str:
     }"
 
 
+def get_reviewer_system_prompt(ctx: RunContext[ReviewerDeps]) -> str:
+    return "\n\n".join(
+        (
+            REVIEWER_SYSTEM_PROMPT.strip(),
+            get_pr_technologies(ctx),
+            get_comment_categories(ctx),
+        )
+    )
+
+
 def get_pr_technologies(ctx: RunContext[ReviewerDeps]) -> str:
     if not ctx.deps.configured_technologies:
         return "You are an expert in whatever technologies the PR is using."
@@ -144,3 +151,12 @@ def get_pr_technologies(ctx: RunContext[ReviewerDeps]) -> str:
 
 def get_summarizing_categories(ctx: RunContext[SummarizingDeps]) -> str:
     return f"The only comment categories that you should keep in the review are: {', '.join(ctx.deps.configured_categories)}."
+
+
+def get_summarizing_system_prompt(ctx: RunContext[SummarizingDeps]) -> str:
+    return "\n\n".join(
+        (
+            SUMMARIZING_SYSTEM_PROMPT.strip(),
+            get_summarizing_categories(ctx),
+        )
+    )

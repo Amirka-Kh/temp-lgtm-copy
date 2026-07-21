@@ -23,7 +23,7 @@ class PrettyFormatter(Formatter[Panel | Layout | Group]):
             style="white",
             title_align="left",
             padding=(1, 1),
-            subtitle=f"Score: {review.review_response.score} {SCORE_MAP[review.review_response.score]}",
+            subtitle=f"Оценка: {review.review_response.score} {SCORE_MAP[review.review_response.score]}",
         )
 
     def format_review_comments_section(self, comments: list[ReviewComment]) -> Group:
@@ -37,7 +37,7 @@ class PrettyFormatter(Formatter[Panel | Layout | Group]):
                 Panel(
                     comment.quote_snippet,
                     style="dim",
-                    title="Code Snippet",
+                    title="Фрагмент кода",
                     title_align="left",
                     padding=(1, 1),
                 ),
@@ -51,7 +51,7 @@ class PrettyFormatter(Formatter[Panel | Layout | Group]):
                         Panel(
                             comment.suggestion.snippet,
                             style="dim green",
-                            title="Code Suggestion",
+                            title="Предложение кода",
                             title_align="left",
                             padding=(1, 1),
                         ),
@@ -105,7 +105,7 @@ class PrettyFormatter(Formatter[Panel | Layout | Group]):
         return layout
 
     def empty_review_message(self) -> str:
-        return "✔ No files to review (all files excluded by provided configuration)."
+        return "✔ Нет файлов для review: все файлы исключены текущей конфигурацией."
 
     def empty_guide_message(self) -> str:
         return "✔ No files to generate a guide for (all files excluded by provided configuration)."

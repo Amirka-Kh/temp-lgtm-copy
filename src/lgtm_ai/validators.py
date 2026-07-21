@@ -128,7 +128,8 @@ def validate_model_url(ctx: click.Context, param: click.Parameter, value: str | 
         raise click.BadParameter("--model-url must start with http:// or https://")
     if not parsed.hostname:
         raise click.BadParameter("--model-url must include a hostname (can be localhost)")
-    if parsed.port is None:
+    _default_ports = {"http": 80, "https": 443}
+    if parsed.port is None and parsed.scheme not in _default_ports:
         raise click.BadParameter("--model-url must include a port (e.g., :11434)")
 
     return value

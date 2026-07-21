@@ -108,3 +108,6 @@ GitHub.sublime-settings
 .vscode/*
 .history
 /.ruff_cache/
+.opencode/
+ai-assessments/*
+.tmp

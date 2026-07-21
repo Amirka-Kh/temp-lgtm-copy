@@ -58,6 +58,7 @@ class CliOptions(BaseModel):
     issues_regex: str | None = None
     issues_platform: IssuesPlatform | None = None
     compare: str | None = None
+    additional_context: tuple[str, ...] | None = None
 
     # Secrets
     git_api_key: str | None = None
@@ -253,9 +254,24 @@ class ConfigHandler:
                 cli_args.git_api_key = ""
 
             settings_cls = self._create_dynamic_settings_class(self.config_file)
+
+            # Exclude additional_context from pydantic-settings merging since CLI and config file
+            # values need to be combined (not overridden). We handle merging manually below.
+            dump_dict = cli_args.model_dump(exclude_none=True)
+            dump_dict.pop("additional_context", None)
+
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=UserWarning)
-                resolved = settings_cls(**cli_args.model_dump(exclude_none=True))
+                resolved = settings_cls(**dump_dict)
+
+            # Convert CLI-provided additional_context strings to AdditionalContext objects and
+            # append them after config-file contexts so they appear last in the rendered prompt.
+            if self.cli_args.additional_context:
+                cli_contexts = tuple(
+                    AdditionalContext(prompt=prompt, file_url=file_url)
+                    for prompt, file_url in self._parse_additional_context(self.cli_args.additional_context)
+                )
+                resolved.additional_context = (*resolved.additional_context, *cli_contexts)
         except tomllib.TOMLDecodeError:
             raise InvalidConfigFileError("TOML file is invalid") from None
         except ValidationError as err:
@@ -300,3 +316,22 @@ class ConfigHandler:
                 return (init_settings, toml_source, env_settings, dotenv_settings, file_secret_settings)
 
         return DynamicResolvedConfig
+
+    @staticmethod
+    def _parse_additional_context(raw: tuple[str, ...]) -> list[tuple[str, str]]:
+        """Parse raw CLI context strings into (prompt, file_url) tuples.
+
+        Each entry can be:
+        - "prompt:path" — colon-separated prompt and path/URL
+        - "path" or "url" — just a path or URL; prompt is auto-generated
+        """
+        parsed: list[tuple[str, str]] = []
+        for entry in raw:
+            if ":" in entry:
+                prompt, file_url = entry.split(":", 1)
+                prompt = prompt.strip()
+            else:
+                prompt = f"Additional context from {entry}"
+                file_url = entry
+            parsed.append((prompt, file_url))
+        return parsed

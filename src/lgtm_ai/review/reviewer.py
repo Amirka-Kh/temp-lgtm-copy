@@ -176,6 +176,7 @@ class CodeReviewer:
         logger.debug(
             "Initial review score: %d; Number of comments: %d", raw_res.output.raw_score, len(raw_res.output.comments)
         )
+        # _log_review_output_state("initial", raw_res.output)
         initial_usage = raw_res.usage()
         logger.debug(
             f"Initial review usage summary: {initial_usage.requests=} {initial_usage.input_tokens=} {initial_usage.output_tokens=} {initial_usage.total_tokens=}"
@@ -205,4 +206,75 @@ class CodeReviewer:
                 usage_limits=usage_limits,
             )
         usage = final_res.usage()
+        # _log_review_output_state("final", final_res.output)
         return final_res.output, usage
+
+
+def _log_review_output_state(stage: str, review: ReviewResponse) -> None:
+    """Log raw text state of LLM output for debugging formatting issues.
+
+    Checks for escaped sequences (\\n), structural artifacts (<tags>), and other
+    anomalies that indicate the LLM produced malformed text fields.
+    """
+    logger.info("=== REVIEW OUTPUT STATE [%s] ===", stage)
+
+    # Check summary for artifacts
+    summary = review.summary
+    has_escaped_newlines = "\\n" in summary
+    has_structural_tags = any(tag in summary for tag in ["<parameter=", "<comment>", "<summary>"])
+    if has_escaped_newlines:
+        logger.warning(
+            "Review output [%s]: summary contains literal \\n escape sequences (LLM produced escaped text)",
+            stage,
+        )
+    if has_structural_tags:
+        logger.warning(
+            "Review output [%s]: summary contains structural XML-like tags — LLM may be leaking prompt structure into output",
+            stage,
+        )
+
+    # Check each comment
+    for i, c in enumerate(review.comments):
+        text = c.comment
+        if "\\n" in text:
+            logger.warning(
+                "Review output [%s]: comment #%d on %s line %d has literal \\n (%d occurrences) — content preview: %r",
+                stage,
+                i + 1,
+                c.new_path,
+                c.line_number,
+                text.count("\\n"),
+                text[:200],
+            )
+        if "\\t" in text:
+            logger.warning(
+                "Review output [%s]: comment #%d on %s line %d has literal \\t",
+                stage,
+                i + 1,
+                c.new_path,
+                c.line_number,
+            )
+        structural = [tag for tag in ["<parameter=", "<comment>", "<summary>"] if tag in text]
+        if structural:
+            logger.warning(
+                "Review output [%s]: comment #%d on %s line %d contains structural tags: %s",
+                stage,
+                i + 1,
+                c.new_path,
+                c.line_number,
+                structural,
+            )
+
+    # Check suggestions
+    for i, c in enumerate(review.comments):
+        if c.suggestion and c.suggestion.snippet:
+            snippet = c.suggestion.snippet
+            if "\\n" in snippet:
+                logger.warning(
+                    "Review output [%s]: suggestion #%d snippet has literal \\n (%d occurrences)",
+                    stage,
+                    i + 1,
+                    snippet.count("\\n"),
+                )
+
+    logger.info("=== END REVIEW OUTPUT STATE [%s] ===", stage)

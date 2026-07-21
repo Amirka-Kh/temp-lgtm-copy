@@ -74,7 +74,7 @@ def test_parse_url_github_valid() -> None:
         ("http://localhost:1234", does_not_raise()),
         ("https://example.com:8080", does_not_raise()),
         ("ftp://example.com", pytest.raises(click.BadParameter, match="http:// or https://")),
-        ("https://example.com", pytest.raises(click.BadParameter, match="must include a port")),
+        ("https://example.com", does_not_raise()),
         ("https://example.com:80", does_not_raise()),
         ("https://example.com:288/path/to/model", does_not_raise()),
     ],
