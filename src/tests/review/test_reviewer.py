@@ -507,3 +507,42 @@ def _assert_agent_message(
 
 def _get_requests_from_messages(messages: list[ModelMessage]) -> list[ModelRequest]:
     return [prompt for prompt in messages if isinstance(prompt, ModelRequest)]
+
+
+@pytest.mark.parametrize(
+    "raised_error",
+    [
+        AgentRunError("Error"),
+        ModelHTTPError(500, "Error"),
+        ModelHTTPError(429, "Error"),
+        _get_ai_validation_error(is_validation_error=True),
+        UsageLimitExceeded("Error"),
+    ],
+)
+def test_summarizer_errors_fall_back_to_initial_review(
+    context_retriever: ContextRetriever, raised_error: Exception
+) -> None:
+    initial_response = ReviewResponse(summary="initial summary", raw_score=2)
+    reviewer_agent = mock.Mock()
+    reviewer_agent.run_sync.return_value = mock.Mock(
+        output=initial_response,
+        usage=RunUsage(requests=1, input_tokens=10, output_tokens=5),
+    )
+    error_summarizing_agent = mock.Mock()
+    error_summarizing_agent.run_sync.side_effect = raised_error
+
+    code_reviewer = CodeReviewer(
+        reviewer_agent=reviewer_agent,
+        summarizing_agent=error_summarizing_agent,
+        model=mock.Mock(spec=OpenAIChatModel, model_name=DEFAULT_AI_MODEL),
+        git_client=MockGitClient(),
+        context_retriever=context_retriever,
+        config=ResolvedConfig(ai_api_key="", git_api_key=""),
+    )
+
+    review = code_reviewer.review(
+        target=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab)
+    )
+
+    assert review.review_response == initial_response
+    assert review.review_response.score == "Needs a Lot of Work"
