@@ -18,7 +18,7 @@ from lgtm_ai.base.constants import DEFAULT_HTTPX_TIMEOUT
 from lgtm_ai.base.exceptions import NothingToReviewError
 from lgtm_ai.base.schemas import IssuesPlatform, LocalRepository, OutputFormat, PRUrl
 from lgtm_ai.base.utils import git_source_supports_multiline_suggestions
-from lgtm_ai.config.constants import DEFAULT_INPUT_TOKEN_LIMIT
+from lgtm_ai.config.constants import DEFAULT_AI_REQUEST_TIMEOUT, DEFAULT_INPUT_TOKEN_LIMIT
 from lgtm_ai.config.handler import CliOptions, ConfigHandler, ResolvedConfig
 from lgtm_ai.formatters.base import Formatter
 from lgtm_ai.formatters.json import JsonFormatter
@@ -105,6 +105,11 @@ def _common_options[**P, T](func: Callable[P, T]) -> Callable[P, T]:
         type=IntOrNoLimitType(),
         help=f"Maximum number of input tokens allowed to send to all AI models in total (defaults to {DEFAULT_INPUT_TOKEN_LIMIT:,}). Pass 'no-limit' to disable the limit.",
     )
+    @click.option(
+        "--ai-request-timeout",
+        type=IntOrNoLimitType(),
+        help=f"Timeout in seconds for each individual request to the AI model (defaults to {DEFAULT_AI_REQUEST_TIMEOUT}). Pass 'no-limit' to fall back to the AI provider client defaults.",
+    )
     @click.option("--verbose", "-v", count=True, help="Set logging level.")
     @functools.wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
@@ -187,7 +192,9 @@ def review(target: PRUrl | LocalRepository, config: str | None, verbose: int, **
         config_file=config,
     ).resolve_config(target)
 
-    agent_extra_settings = AgentSettings(retries=resolved_config.ai_retries)
+    agent_extra_settings = AgentSettings(
+        retries=resolved_config.ai_retries, request_timeout=resolved_config.ai_request_timeout
+    )
     formatter: Formatter[Any] = MarkDownFormatter(
         add_ranges_to_suggestions=git_source_supports_multiline_suggestions(target.source)
     )
@@ -258,7 +265,9 @@ def guide(
         cli_args=CliOptions(**config_kwargs),
         config_file=config,
     ).resolve_config(target)
-    agent_extra_settings = AgentSettings(retries=resolved_config.ai_retries)
+    agent_extra_settings = AgentSettings(
+        retries=resolved_config.ai_retries, request_timeout=resolved_config.ai_request_timeout
+    )
     git_client = get_git_client(
         source=target.source, token=resolved_config.git_api_key, formatter=MarkDownFormatter(), url=target.base_url
     )
@@ -329,7 +338,9 @@ def discuss(
         config_file=config,
     ).resolve_config(target)
 
-    agent_extra_settings = AgentSettings(retries=resolved_config.ai_retries)
+    agent_extra_settings = AgentSettings(
+        retries=resolved_config.ai_retries, request_timeout=resolved_config.ai_request_timeout
+    )
     logger.debug("get_git_client called with source=%r", target.source)
     git_client = get_git_client(
         source=target.source, token=resolved_config.git_api_key, formatter=MarkDownFormatter(), url=target.base_url

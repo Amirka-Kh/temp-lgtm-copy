@@ -551,6 +551,12 @@ class AgentSettings(BaseModel):
             description="Number of retries the agent will perform when querying the AI API. Defaults to None, in which case pydantic-ai defaults will be used."
         ),
     ]
+    request_timeout: Annotated[
+        int | None,
+        Field(
+            description="Timeout in seconds for each individual request to the AI API. Defaults to None, in which case the AI provider client defaults will be used."
+        ),
+    ] = None
 
 
 class AdditionalContext(BaseModel):
