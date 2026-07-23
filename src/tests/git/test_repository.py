@@ -3,6 +3,7 @@ import tempfile
 from collections.abc import Generator
 from unittest import mock
 
+import git
 import pytest
 from lgtm_ai.git.exceptions import GitDiffParseError
 from lgtm_ai.git.parser import DiffFileMetadata, DiffResult
@@ -12,8 +13,6 @@ from lgtm_ai.git.repository import (
     get_diff_from_local_repo,
     get_file_contents_from_local_repo,
 )
-
-import git
 
 
 @pytest.fixture

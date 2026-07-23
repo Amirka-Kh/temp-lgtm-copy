@@ -1,9 +1,13 @@
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from lgtm_ai.ai.schemas import Review, ReviewGuide
 from lgtm_ai.base.schemas import PRUrl
 from lgtm_ai.git_client.schemas import ContextBranch, IssueContent, PRDiff, PRMetadata
 from pydantic import HttpUrl
+
+if TYPE_CHECKING:
+    # Imported lazily to avoid a circular import through the discuss package.
+    from lgtm_ai.discuss.prompt import DiscussionThread
 
 
 class GitClient(Protocol):
@@ -29,3 +33,6 @@ class GitClient(Protocol):
 
         It should never raise, and instead return None if the file cannot be downloaded.
         """
+
+    def get_discussion(self, pr_url: PRUrl, discussion_id: str) -> "DiscussionThread":
+        """Fetch a specific discussion thread (or review comment) with its notes and code context."""

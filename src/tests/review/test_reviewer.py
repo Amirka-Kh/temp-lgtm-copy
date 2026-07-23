@@ -277,7 +277,7 @@ def test_summarizing_message_in_review(context_retriever: ContextRetriever) -> N
     test_summarizing_agent = get_summarizing_agent_with_settings()
     test_agent.run_sync.return_value = mock.Mock(
         output=ReviewResponse(summary="a", raw_score=1),
-        usage=lambda: RunUsage(requests=1, input_tokens=1041, output_tokens=6),
+        usage=RunUsage(requests=1, input_tokens=1041, output_tokens=6),
     )
 
     with (
@@ -298,28 +298,22 @@ def test_summarizing_message_in_review(context_retriever: ContextRetriever) -> N
             target=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab)
         )
 
-    expected_review_json = json.dumps(
-        {"summary": "a", "comments": [], "raw_score": 1}, indent=2
+    expected_review_json = ReviewResponse(summary="a", raw_score=1).model_dump_json(indent=2)
+    expected_message = (
+        f"PR METADATA:\n"
+        f"- Title: feat(#288): a title\n"
+        f"- Description: bar\n"
+        f"\n"
+        f"PR DIFF:\n"
+        f"```\n"
+        f"{json.dumps([diff.model_dump() for diff in MOCK_DIFF])}\n"
+        f"```\n"
+        f"\n"
+        f"REVIEW:\n"
+        f"```\n"
+        f"{expected_review_json}\n"
+        f"```"
     )
-    expected_message = textwrap.dedent(
-        f"""
-        PR METADATA:
-        - Title: feat(#288): a title
-        - Description: bar
-
-        PR DIFF:
-        ```
-        {json.dumps([diff.model_dump() for diff in MOCK_DIFF])}
-        ```
-
-        REVIEW:
-        ```
-        {expected_review_json}
-        ```
-
-
-        """
-    ).strip()
     _assert_agent_message(
         messages,
         expected_message,
@@ -403,7 +397,9 @@ def test_get_review_adds_categories_to_prompt(context_retriever: ContextRetrieve
     # These two categories are in the prompt
     assert "Correctness" in content
     assert "Quality" in content
-    assert "The categories you should exclusively focus on for your review comments are: Correctness, Quality" in content
+    assert (
+        "The categories you should exclusively focus on for your review comments are: Correctness, Quality" in content
+    )
 
 
 def test_review_fails_if_all_files_are_excluded() -> None:

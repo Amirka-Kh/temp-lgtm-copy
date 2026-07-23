@@ -211,7 +211,7 @@ class CodeReviewer:
 
 
 def _log_review_output_state(stage: str, review: ReviewResponse) -> None:
-    """Log raw text state of LLM output for debugging formatting issues.
+    r"""Log raw text state of LLM output for debugging formatting issues.
 
     Checks for escaped sequences (\\n), structural artifacts (<tags>), and other
     anomalies that indicate the LLM produced malformed text fields.

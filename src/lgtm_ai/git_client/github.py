@@ -187,9 +187,9 @@ class GitHubClient(GitClient):
         """
         try:
             pr = _get_pr(self.client, pr_url)
-            comment = pr.get_comment(discussion_id)
-        except github.GithubException as err:
-            logger.error("Failed to retrieve review comment %d from PR %s", discussion_id, pr_url.full_url)
+            comment = pr.get_comment(int(discussion_id))
+        except github.GithubException:
+            logger.error("Failed to retrieve review comment %s from PR %s", discussion_id, pr_url.full_url)
             raise
 
         author = comment.user.login if comment.user else "Unknown"
@@ -204,9 +204,10 @@ class GitHubClient(GitClient):
         # Get full file content for complete context (cross-references, calls, etc.)
         file_content: str | None = None
         if file_path:
-            file_content = self.get_file_contents(pr_url, file_path, ContextBranch.source)
+            file_content = self.get_file_contents(pr_url, file_path, "source")
 
         return DiscussionThread(notes, file_path, line_number, file_content)
+
 
 @lru_cache(maxsize=64)
 def _get_repo(client: github.Github, repo_path: str) -> github.Repository.Repository:

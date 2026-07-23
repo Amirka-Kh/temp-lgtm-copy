@@ -130,7 +130,7 @@ convention = "pep257"
 known-third-party = ["lgtm_ai", "tests"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = [
+"src/tests/*" = [
     "ANN", # no enforcement of type annotations in tests
     "S",   # bandit is not useful in tests
 ]

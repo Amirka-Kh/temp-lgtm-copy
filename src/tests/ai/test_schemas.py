@@ -7,7 +7,6 @@ in a quote_snippet).
 """
 
 import json
-from typing import Any
 
 from lgtm_ai.ai.schemas import (
     ReviewComment,
@@ -18,8 +17,8 @@ from lgtm_ai.ai.schemas import (
     _try_extract_inline_json_array,
 )
 
-
 # ── _normalize_llm_escapes ─────────────────────────────────────────────────
+
 
 class TestNormalizeLlmEscapes:
     def test_no_change_when_clean(self) -> None:
@@ -45,10 +44,11 @@ class TestNormalizeLlmEscapes:
         assert result == "\nval\ntext"
 
     def test_none_input(self) -> None:
-        assert _normalize_llm_escapes(None) is None
+        assert _normalize_llm_escapes(None) is None  # type: ignore[arg-type]
 
 
 # ── _try_extract_inline_json_array ─────────────────────────────────────────
+
 
 class TestTryExtractInlineJsonArray:
     """Tests for bracket-matching extraction that respects string boundaries."""
@@ -58,7 +58,7 @@ class TestTryExtractInlineJsonArray:
         result = _try_extract_inline_json_array(text)
         assert result is not None
         clean_summary, json_str = result
-        assert clean_summary == 'PR looks good,'
+        assert clean_summary == "PR looks good,"
         parsed = json.loads(json_str)
         assert len(parsed) == 1
         assert parsed[0]["old_path"] == "a.py"
@@ -158,6 +158,7 @@ class TestTryExtractInlineJsonArray:
 
 # ── _extract_embedded_comments_from_summary ────────────────────────────────
 
+
 class TestExtractEmbeddedCommentsFromSummary:
     """Tests for three-pattern embedded comment extraction."""
 
@@ -165,7 +166,7 @@ class TestExtractEmbeddedCommentsFromSummary:
         """Pattern 1: <parameter=comments> XML-like tag."""
         summary = 'Some review text<parameter=comments>[{"old_path":"a.py","new_path":"a.py","comment":"fix","category":"Quality","severity":"LOW","line_number":1,"relative_line_number":0,"is_comment_on_new_path":true,"programming_language":"Python"}]</parameter>'
         clean, json_str = _extract_embedded_comments_from_summary(summary)
-        assert clean == 'Some review text'
+        assert clean == "Some review text"
         assert json_str is not None
         parsed = json.loads(json_str)
         assert len(parsed) == 1
@@ -186,7 +187,7 @@ class TestExtractEmbeddedCommentsFromSummary:
 
     def test_no_pattern_matches(self) -> None:
         """Clean summary with no embedded structure."""
-        summary = 'The PR looks good overall.'
+        summary = "The PR looks good overall."
         clean, json_str = _extract_embedded_comments_from_summary(summary)
         assert clean == summary
         assert json_str is None
@@ -201,7 +202,7 @@ class TestExtractEmbeddedCommentsFromSummary:
             '"category": "Security", "severity": "HIGH", "line_number": 43, '
             '"relative_line_number": 30, "is_comment_on_new_path": true, '
             '"programming_language": "Python", '
-            '"quote_snippet": "    api_key = os.getenv(\'OPENAI_API_KEY\', \'sk-big-secret\')", '
+            "\"quote_snippet\": \"    api_key = os.getenv('OPENAI_API_KEY', 'sk-big-secret')\", "
             '"suggestion": null }, { "old_path": "scripts/parsing/pdf_to_json.py", '
             '"new_path": "scripts/parsing/pdf_to_json.py", '
             '"comment": "В файле есть неиспользуемые импорты", '
@@ -228,6 +229,7 @@ class TestExtractEmbeddedCommentsFromSummary:
 
 
 # ── _parse_comments_json ───────────────────────────────────────────────────
+
 
 class TestParseCommentsJson:
     def test_top_level_list(self) -> None:
@@ -256,6 +258,7 @@ class TestParseCommentsJson:
 
 # ── ReviewResponse integration ─────────────────────────────────────────────
 
+
 class TestReviewResponseEmbeddedComments:
     """Integration tests for ReviewResponse's @model_validator."""
 
@@ -270,9 +273,14 @@ class TestReviewResponseEmbeddedComments:
     def test_review_response_normal_comments_unchanged(self) -> None:
         """When comments are properly in the comments field, extraction is skipped."""
         comment = ReviewComment(
-            old_path="a.py", new_path="a.py", comment="fix",
-            category="Quality", severity="LOW", line_number=1,
-            relative_line_number=0, is_comment_on_new_path=True,
+            old_path="a.py",
+            new_path="a.py",
+            comment="fix",
+            category="Quality",
+            severity="LOW",
+            line_number=1,
+            relative_line_number=0,
+            is_comment_on_new_path=True,
             programming_language="Python",
         )
         response = ReviewResponse(
@@ -286,9 +294,14 @@ class TestReviewResponseEmbeddedComments:
     def test_review_response_no_extraction_when_comments_exist(self) -> None:
         """If comments are already populated, embedded extraction is skipped."""
         comment = ReviewComment(
-            old_path="a.py", new_path="a.py", comment="existing",
-            category="Correctness", severity="HIGH", line_number=5,
-            relative_line_number=2, is_comment_on_new_path=True,
+            old_path="a.py",
+            new_path="a.py",
+            comment="existing",
+            category="Correctness",
+            severity="HIGH",
+            line_number=5,
+            relative_line_number=2,
+            is_comment_on_new_path=True,
             programming_language="Python",
         )
         # Summary also contains embedded array — but extraction should be skipped
@@ -312,7 +325,7 @@ class TestExtractEmbeddedCommentsRawScoreStripping:
         clean, json_str = _extract_embedded_comments_from_summary(summary)
         assert json_str is not None
         assert "raw_score" not in clean
-        assert clean == 'PR has some issues'
+        assert clean == "PR has some issues"
 
     def test_raw_score_stripped_with_space_before_bracket(self) -> None:
         """Pattern where whitespace separates summary from [ and raw_score follows ]."""
@@ -340,7 +353,7 @@ class TestExtractEmbeddedCommentsRawScoreStripping:
 
     def test_no_false_positive_on_clean_summary(self) -> None:
         """A summary that legitimately mentions 'score' should not be mangled."""
-        summary = 'The PR looks good overall.'
+        summary = "The PR looks good overall."
         clean, json_str = _extract_embedded_comments_from_summary(summary)
         assert clean == summary
         assert json_str is None
@@ -350,21 +363,21 @@ class TestReviewResponseEscapeNormalization:
     """Tests that ReviewResponse normalizes escape sequences in summary field."""
 
     def test_summary_escapes_normalized_by_before_validator(self) -> None:
-        """BeforeValidator on summary should convert literal \\n to real newlines."""
-        summary = 'Line 1\\nLine 2'
+        r"""BeforeValidator on summary should convert literal \\n to real newlines."""
+        summary = "Line 1\\nLine 2"
         response = ReviewResponse(summary=summary, comments=[], raw_score=3)
         assert "\\n" not in response.summary
         assert "\n" in response.summary
 
     def test_summary_xml_tags_stripped_by_before_validator(self) -> None:
         """BeforeValidator should strip structural XML-like tags from summary."""
-        summary = '<parameter=content>PR looks good</parameter>'
+        summary = "<parameter=content>PR looks good</parameter>"
         response = ReviewResponse(summary=summary, comments=[], raw_score=3)
         assert "<parameter" not in response.summary
         assert "PR looks good" in response.summary
 
     def test_full_integration_escaped_and_embedded(self) -> None:
-        """End-to-end: escaped sequences + embedded comments + raw_score artifact.
+        r"""End-to-end: escaped sequences + embedded comments + raw_score artifact.
 
         This mirrors the real-world bug where the LLM output contained:
         - Literal \\n escape sequences in summary text
@@ -373,7 +386,7 @@ class TestReviewResponseEscapeNormalization:
         - Trailing "raw_score": N after the array
         """
         summary = (
-            '<parameter=content>PR вносит изменения\\n\\nВ целом хорошо</parameter> '
+            "<parameter=content>PR вносит изменения\\n\\nВ целом хорошо</parameter> "
             '[ { "old_path": "a.py", "new_path": "a.py", '
             '"comment": "fix", "category": "Quality", "severity": "LOW", '
             '"line_number": 1, "relative_line_number": 0, '

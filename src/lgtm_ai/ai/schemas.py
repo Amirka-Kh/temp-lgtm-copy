@@ -5,16 +5,16 @@ import re
 import zoneinfo
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Any, Annotated, Final, Literal, Self, get_args
+from typing import Annotated, Any, Final, Literal, Self, cast, get_args
 from uuid import uuid4
 
 from lgtm_ai.git_client.schemas import PRDiff
-
-logger = logging.getLogger("lgtm.ai")
 from openai.types import ChatModel
 from pydantic import AfterValidator, BaseModel, BeforeValidator, Field, computed_field, model_validator
 from pydantic_ai.models.mistral import LatestMistralModelNames
 from pydantic_ai.usage import RunUsage
+
+logger = logging.getLogger("lgtm.ai")
 
 CommentCategory = Literal["Correctness", "Quality", "Testing", "Security"]
 CommentSeverity = Literal["LOW", "MEDIUM", "HIGH"]
@@ -118,7 +118,7 @@ class CodeSuggestionOffset(BaseModel):
 
 
 def _normalize_llm_escapes(value: str) -> str:
-    """Normalize escaped sequences and strip structural artifacts from LLM output.
+    r"""Normalize escaped sequences and strip structural artifacts from LLM output.
 
     LLMs may output literal backslash-n (\\n) instead of actual newlines, especially when
     generating structured data via pydantic-ai. They may also leak XML-like structural tags
@@ -147,7 +147,7 @@ def _normalize_llm_escapes(value: str) -> str:
     return result
 
 
-def _try_extract_inline_json_array(text: str) -> tuple[str, str | None] | None:
+def _try_extract_inline_json_array(text: str) -> tuple[str, str] | None:  # noqa: C901
     """Try to extract an inline JSON array containing review comment fields from text.
 
     Used when the LLM leaks function-calling format — a JSON array with "old_path" or
@@ -165,18 +165,18 @@ def _try_extract_inline_json_array(text: str) -> tuple[str, str | None] | None:
         None if no such pattern exists.
     """
     # Quick pre-check: does the text contain a JSON-like array with comment fields?
-    if '[' not in text or '}' not in text:
+    if "[" not in text or "}" not in text:
         logger.debug("No bracket/brace characters found in text, skipping inline JSON extraction")
         return None
 
-    def _find_matching_bracket(opening_pos: int) -> int | None:
+    def _find_matching_bracket(opening_pos: int) -> int | None:  # noqa: C901
         """Find matching ] for [ at opening_pos, respecting strings and escape sequences."""
         depth = 0
         i = opening_pos
         while i < len(text):
             c = text[i]
             # Handle escape sequences (skip paired chars like \\n, \", etc.)
-            if c == '\\' and i + 1 < len(text):
+            if c == "\\" and i + 1 < len(text):
                 i += 2
                 continue
             # Skip everything inside quoted strings — brackets here are data, not structure
@@ -184,7 +184,7 @@ def _try_extract_inline_json_array(text: str) -> tuple[str, str | None] | None:
                 i += 1
                 while i < len(text):
                     sc = text[i]
-                    if sc == '\\' and i + 1 < len(text):
+                    if sc == "\\" and i + 1 < len(text):
                         i += 2
                         continue
                     if sc == '"':
@@ -192,9 +192,9 @@ def _try_extract_inline_json_array(text: str) -> tuple[str, str | None] | None:
                     i += 1
                 i += 1  # move past closing quote
                 continue
-            if c == '[':
+            if c == "[":
                 depth += 1
-            elif c == ']':
+            elif c == "]":
                 depth -= 1
                 if depth < 0:
                     return None  # mismatched brackets (started inside a string)
@@ -210,16 +210,17 @@ def _try_extract_inline_json_array(text: str) -> tuple[str, str | None] | None:
             logger.debug("No matching ']' found for '[' at position %d", bracket_pos)
             return None
 
-        json_candidate = text[bracket_pos:closing + 1]
+        json_candidate = text[bracket_pos : closing + 1]
         try:
             parsed = json.loads(json_candidate)
             if isinstance(parsed, list) and len(parsed) > 0:
                 has_comment_fields = any(
-                    isinstance(item, dict) and ('old_path' in item or 'new_path' in item)
-                    for item in parsed
+                    isinstance(item, dict) and ("old_path" in item or "new_path" in item) for item in parsed
                 )
                 if has_comment_fields:
-                    logger.debug("Found inline JSON array with %d review comments at position %d", len(parsed), bracket_pos)
+                    logger.debug(
+                        "Found inline JSON array with %d review comments at position %d", len(parsed), bracket_pos
+                    )
                     return text[:bracket_pos].rstrip(), json_candidate
                 else:
                     logger.debug("JSON array at position %d found but contains no comment fields", bracket_pos)
@@ -229,18 +230,18 @@ def _try_extract_inline_json_array(text: str) -> tuple[str, str | None] | None:
 
     # Collect all [ positions from right to left.
     # Prefer [ that's followed by { (array of objects = comments array structure).
-    last_bracket = text.rfind('[')
+    last_bracket = text.rfind("[")
 
     candidates: list[int] = []
     for pos in range(last_bracket, -1, -1):
-        if text[pos] == '[':
-            after = text[pos + 1:].lstrip()
-            if after and after[0] == '{':
+        if text[pos] == "[":
+            after = text[pos + 1 :].lstrip()
+            if after and after[0] == "{":
                 candidates.append(pos)  # rightmost first (highest priority)
 
     # Lower-priority: remaining [ positions (still right to left)
     for pos in range(last_bracket, -1, -1):
-        if text[pos] == '[' and pos not in candidates:
+        if text[pos] == "[" and pos not in candidates:
             candidates.append(pos)
 
     # Try each candidate in priority order; return first valid match
@@ -253,7 +254,7 @@ def _try_extract_inline_json_array(text: str) -> tuple[str, str | None] | None:
 
 
 def _extract_embedded_comments_from_summary(summary: str) -> tuple[str, str | None]:
-    """Extract embedded comment JSON from summary when LLM leaks structure into it.
+    r"""Extract embedded comment JSON from summary when LLM leaks structure into it.
 
     When the summarizing agent gets confused, it may output something like:
         "some text about issues\\n<parameter=comments>\\nor comments:\\n[{...}]\\n"
@@ -281,20 +282,22 @@ def _extract_embedded_comments_from_summary(summary: str) -> tuple[str, str | No
         content = param_match.group(1).strip()
         # Check if it looks like a JSON array start
         if "[" in content and "}" not in content.split("[")[0]:
-            logger.debug("Pattern 1 matched: <parameter=comments> block found, extracted %d chars of JSON", len(content))
-            return summary[:param_match.start()].rstrip(), content
+            logger.debug(
+                "Pattern 1 matched: <parameter=comments> block found, extracted %d chars of JSON", len(content)
+            )
+            return summary[: param_match.start()].rstrip(), content
 
     # Pattern 2: "or comments:" or ", comments:" followed by JSON array
     # This is the exact pattern we've seen from real LLM output
-    comment_keyword = re.search(r'[\n,]\s*(?:or\s+)?comments?\s*:\s*\n', summary, re.IGNORECASE)
+    comment_keyword = re.search(r"[\n,]\s*(?:or\s+)?comments?\s*:\s*\n", summary, re.IGNORECASE)
     if comment_keyword:
-        after = summary[comment_keyword.end():].strip()
+        after = summary[comment_keyword.end() :].strip()
         # Try to find a JSON array starting from this position
         bracket_pos = after.find("[")
         if bracket_pos >= 0 and "]" in after:
-            json_candidate = after[:after.rfind("]") + 1]
+            json_candidate = after[: after.rfind("]") + 1]
             logger.debug("Pattern 2 matched: keyword separator found, extracted %d chars of JSON", len(json_candidate))
-            return summary[:comment_keyword.start()].rstrip(), json_candidate
+            return summary[: comment_keyword.start()].rstrip(), json_candidate
 
     # Pattern 3: LLM leaks function-calling format — JSON array with comment structure
     # embedded inline after summary text (no keyword separator). Detect by looking for
@@ -310,7 +313,7 @@ def _extract_embedded_comments_from_summary(summary: str) -> tuple[str, str | No
         # model emits a dict-like structure { "summary": ..., "comments": [...],
         # "raw_score": N } instead of cleanly separating response-model fields.
         # Match: space(s) + "raw_score" + colon + optional whitespace + int/quoted int
-        clean = re.sub(r'\s+"raw_score"\s*:\s*(?:["\']?\d+["\']?)\s*$', '', clean).rstrip()
+        clean = re.sub(r'\s+"raw_score"\s*:\s*(?:["\']?\d+["\']?)\s*$', "", clean).rstrip()
 
         return candidate
 
@@ -318,7 +321,7 @@ def _extract_embedded_comments_from_summary(summary: str) -> tuple[str, str | No
     return summary, None
 
 
-def _parse_comments_json(json_str: str | None) -> list[dict]:
+def _parse_comments_json(json_str: str | None) -> list[dict[str, Any]]:
     """Parse a JSON string into a list of comment dicts, returning empty list on failure."""
     if not json_str:
         logger.debug("No JSON string provided to parse_comments_json, returning empty list")
@@ -331,10 +334,15 @@ def _parse_comments_json(json_str: str | None) -> list[dict]:
         if isinstance(parsed, dict) and "comments" in parsed:
             comments_data = parsed["comments"]
             if isinstance(comments_data, list):
-                logger.debug("Parsed JSON successfully: 'comments' key contains array with %d items", len(comments_data))
+                logger.debug(
+                    "Parsed JSON successfully: 'comments' key contains array with %d items", len(comments_data)
+                )
                 return comments_data
             else:
-                logger.debug("JSON 'comments' key exists but is not a list (got %s), returning empty", type(comments_data).__name__)
+                logger.debug(
+                    "JSON 'comments' key exists but is not a list (got %s), returning empty",
+                    type(comments_data).__name__,
+                )
         else:
             logger.debug("JSON parsed as dict but has no 'comments' key, returning empty")
     except (json.JSONDecodeError, TypeError) as exc:
@@ -357,18 +365,17 @@ def _normalize_raw_score(value: ReviewRawScore | str | int) -> ReviewRawScore:
     to recover the intended value so pydantic's Literal validation succeeds.
     """
     if isinstance(value, int):
-        return value  # Already an integer — pass through
+        return cast(ReviewRawScore, value)  # Already an integer — pass through
 
     if not isinstance(value, str):
         # Non-string, non-int: let Pydantic's normal validation handle it
-        return value  # type: ignore[return-value]
+        return value
 
     stripped = value.strip()
 
     # Repeatedly strip matching outer quote pairs (handles '"2"' → '2', "'2'" → '2')
     while len(stripped) >= 2 and (
-        (stripped[0] == '"' and stripped[-1] == '"')
-        or (stripped[0] == "'" and stripped[-1] == "'")
+        (stripped[0] == '"' and stripped[-1] == '"') or (stripped[0] == "'" and stripped[-1] == "'")
     ):
         stripped = stripped[1:-1].strip()
 
@@ -389,7 +396,11 @@ class CodeSuggestion(BaseModel):
         CodeSuggestionOffset,
         Field(description="Offset (from comment line number) to end the suggestion"),
     ]
-    snippet: Annotated[str, BeforeValidator(_normalize_llm_escapes), Field(description="Suggested code snippet to replace the commented code")]
+    snippet: Annotated[
+        str,
+        BeforeValidator(_normalize_llm_escapes),
+        Field(description="Suggested code snippet to replace the commented code"),
+    ]
     programming_language: Annotated[str, Field(description="Programming language of the code snippet")]
     ready_for_replacement: Annotated[
         bool, Field(description="Whether the suggestion is totally ready to be applied directly")
@@ -408,16 +419,16 @@ class ReviewComment(BaseModel):
     relative_line_number: Annotated[int, Field(description="Relative line number (in the diff) to place the comment")]
     is_comment_on_new_path: Annotated[bool, Field(description="Whether the comment is on a new path")]
     programming_language: Annotated[str, Field(description="Programming language of the file")]
-    quote_snippet: Annotated[str | None, BeforeValidator(_normalize_llm_escapes_optional), Field(description="Quoted code snippet")] = None
+    quote_snippet: Annotated[
+        str | None, BeforeValidator(_normalize_llm_escapes_optional), Field(description="Quoted code snippet")
+    ] = None
     suggestion: Annotated[CodeSuggestion | None, Field(description="Suggested code change")] = None
 
 
 class ReviewResponse(BaseModel):
     """Structured output of any AI agent performing or summarizing code reviews."""
 
-    summary: Annotated[
-        str, BeforeValidator(_normalize_llm_escapes), Field(description="Summary of the review")
-    ]
+    summary: Annotated[str, BeforeValidator(_normalize_llm_escapes), Field(description="Summary of the review")]
     # comments are sorted by severity
     comments: Annotated[
         list[ReviewComment], AfterValidator(lambda v: sorted(v, key=lambda x: SEVERITY_PRIORITY_MAP[x.severity]))
@@ -431,7 +442,7 @@ class ReviewResponse(BaseModel):
 
     @model_validator(mode="after")
     def _extract_embedded_comments(self) -> Self:
-        """Extract embedded comment JSON from summary when LLM leaks structure into it.
+        r"""Extract embedded comment JSON from summary when LLM leaks structure into it.
 
         When the summarizing agent gets confused, it may embed the comments JSON array
         inside the summary field alongside structural tags like <parameter=comments>.
