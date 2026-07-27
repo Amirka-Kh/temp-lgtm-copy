@@ -1,3 +1,4 @@
+import pathlib
 from unittest import mock
 
 import httpx
@@ -75,6 +76,56 @@ class TestAdditionalContext:
                 context="File contents for https://example.com/file.txt",
             )
         ]
+
+    def test_retrieve_additional_context_from_local_file(self, tmp_path: pathlib.Path) -> None:
+        local_file = tmp_path / "guidelines.md"
+        local_file.write_text("Local file contents", encoding="utf-8")
+        context_retriever = ContextRetriever(
+            git_client=MockGitClient(), issues_client=MockGitClient(), httpx_client=mock.Mock(spec=httpx.Client)
+        )
+
+        pr_url = PRUrl(
+            full_url="https://example.com/repo/pull/1",
+            base_url="https://example.com",
+            repo_path="repo",
+            pr_number=1,
+            source=PRSource.github,
+        )
+
+        additional_context = context_retriever.get_additional_context(
+            pr_url,
+            additional_context=(AdditionalContext(prompt="Test context", file_url=str(local_file), context=None),),
+        )
+
+        assert additional_context == [
+            AdditionalContext(
+                file_url=str(local_file),
+                prompt="Test context",
+                context="Local file contents",
+            )
+        ]
+
+    def test_retrieve_additional_context_from_missing_local_file_is_skipped(self, tmp_path: pathlib.Path) -> None:
+        context_retriever = ContextRetriever(
+            git_client=MockGitClient(), issues_client=MockGitClient(), httpx_client=mock.Mock(spec=httpx.Client)
+        )
+
+        pr_url = PRUrl(
+            full_url="https://example.com/repo/pull/1",
+            base_url="https://example.com",
+            repo_path="repo",
+            pr_number=1,
+            source=PRSource.github,
+        )
+
+        additional_context = context_retriever.get_additional_context(
+            pr_url,
+            additional_context=(
+                AdditionalContext(prompt="Test context", file_url=str(tmp_path / "missing.md"), context=None),
+            ),
+        )
+
+        assert additional_context is None
 
     def test_retrieve_additional_context_from_config(self) -> None:
         context_retriever = ContextRetriever(
