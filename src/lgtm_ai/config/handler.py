@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import tomllib
 import warnings
 from pathlib import Path
@@ -338,7 +339,11 @@ class ConfigHandler:
         """
         parsed: list[tuple[str, str]] = []
         for entry in raw:
-            if ":" in entry:
+            if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", entry):
+                # A bare URL without a prompt prefix; splitting on ":" would mangle the scheme.
+                prompt = f"Additional context from {entry}"
+                file_url = entry
+            elif ":" in entry:
                 prompt, file_url = entry.split(":", 1)
                 prompt = prompt.strip()
             else:

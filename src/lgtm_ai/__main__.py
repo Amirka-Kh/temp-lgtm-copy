@@ -165,9 +165,9 @@ def _common_options[**P, T](func: Callable[P, T]) -> Callable[P, T]:
     "additional_context",
     multiple=True,
     metavar="PROMPT:FILE_URL",
-    help="Additional context file or URL for the LLM review. Can be a repo-relative path or URL. "
-    "Repeat to add multiple contexts. Use format 'prompt:path'. If no colon is provided, "
-    "the path/URL itself becomes the prompt.",
+    help="Additional context file or URL for the LLM review. Can be a repo-relative path, an absolute "
+    "local file path, or a URL. Repeat to add multiple contexts. Use format 'prompt:path'. If no "
+    "prompt is provided, the path/URL itself becomes the prompt.",
 )
 def review(target: PRUrl | LocalRepository, config: str | None, verbose: int, **config_kwargs: object) -> None:
     """Review a Pull Request or local repository using AI.

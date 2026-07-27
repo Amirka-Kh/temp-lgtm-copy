@@ -81,43 +81,39 @@ class ContextRetriever:
         From the provided additional context configurations it returns a list of `AdditionalContext` that contains
         the necessary additional context contents to generate a prompt for the AI.
 
-        It either downloads the content from the provided URLs directly (no authentication/custom headers supported)
-        or retrieves the content from the repository URL if the given context is a relative path. If no file URL
-        is provided for a particular context, it will be returned as is, assuming the `context` field contains the necessary content.
+        It either downloads the content from the provided URLs directly (no authentication/custom headers supported),
+        reads it from the local filesystem if the given context is an absolute path, or retrieves the content from
+        the repository URL if the given context is a relative path. If no file URL is provided for a particular
+        context, it will be returned as is, assuming the `context` field contains the necessary content.
         """
         logger.info("Fetching additional context")
         extra_context: list[AdditionalContext] = []
         for context in additional_context:
-            if context.file_url:
-                parsed_url = urlparse(context.file_url)
-                if self._is_relative_path(parsed_url):
-                    if isinstance(pr_url, PRUrl):
-                        content = self._download_content_from_repository(pr_url, context.file_url)
-                    else:
-                        content = get_file_contents_from_local_repo(pr_url.repo_path, pathlib.Path(context.file_url))
-
-                    if content:
-                        extra_context.append(
-                            AdditionalContext(
-                                prompt=context.prompt,
-                                file_url=context.file_url,
-                                context=content,
-                            )
-                        )
-                else:
-                    # If the URL is absolute, we just attempt to download it
-                    content = self._download_content_from_url(context.file_url)
-                    if content:
-                        extra_context.append(
-                            AdditionalContext(
-                                prompt=context.prompt,
-                                file_url=context.file_url,
-                                context=content,
-                            )
-                        )
-            else:
+            if not context.file_url:
                 # If no file URL is provided, we assume the content is directly in the context config
                 extra_context.append(context)
+                continue
+
+            parsed_url = urlparse(context.file_url)
+            if not self._is_relative_path(parsed_url):
+                # If the URL is absolute, we just attempt to download it
+                content = self._download_content_from_url(context.file_url)
+            elif pathlib.Path(context.file_url).is_absolute():
+                # Absolute filesystem paths unambiguously point to the user's machine, not the repository
+                content = self._read_content_from_local_file(pathlib.Path(context.file_url))
+            elif isinstance(pr_url, PRUrl):
+                content = self._download_content_from_repository(pr_url, context.file_url)
+            else:
+                content = get_file_contents_from_local_repo(pr_url.repo_path, pathlib.Path(context.file_url))
+
+            if content:
+                extra_context.append(
+                    AdditionalContext(
+                        prompt=context.prompt,
+                        file_url=context.file_url,
+                        context=content,
+                    )
+                )
 
         return extra_context or None
 
@@ -148,6 +144,17 @@ class ContextRetriever:
             logger.warning(f"Could not retrieve content for file URL: {file_url}. Skipping this context.")
             return None
         return content
+
+    def _read_content_from_local_file(self, path: pathlib.Path) -> str | None:
+        """Read additional context content from a file on the local filesystem."""
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            logger.warning("Could not read local context file %s. Skipping this context.", path)
+            return None
+        except UnicodeDecodeError:
+            logger.warning("Local context file %s is not a utf-8 encoded text file. Skipping this context.", path)
+            return None
 
     def _download_content_from_url(self, url: str) -> str | None:
         """Download content from a given URL."""
