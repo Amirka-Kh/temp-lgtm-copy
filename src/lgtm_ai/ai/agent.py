@@ -28,6 +28,7 @@ from pydantic_ai.providers.deepseek import DeepSeekProvider
 from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.providers.mistral import MistralProvider
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.settings import ModelSettings
 
 logger = logging.getLogger("lgtm.ai")
 
@@ -123,6 +124,10 @@ def _process_extra_settings(settings: AgentSettings | None) -> dict[str, Any]:
     extra_settings: dict[str, Any] = {}
     if settings is not None:
         extra_settings = settings.model_dump(exclude_none=True)
+        # `request_timeout` is not an `Agent` argument; it maps to the `timeout` model setting.
+        request_timeout = extra_settings.pop("request_timeout", None)
+        if request_timeout is not None:
+            extra_settings["model_settings"] = ModelSettings(timeout=request_timeout)
         logger.debug("Extra agent settings: %s", extra_settings)
     return extra_settings
 

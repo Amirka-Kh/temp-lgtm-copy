@@ -9,8 +9,6 @@ import gitlab
 import gitlab.exceptions
 import gitlab.v4
 import gitlab.v4.objects
-import textwrap
-
 from lgtm_ai.ai.schemas import Review, ReviewComment, ReviewGuide
 from lgtm_ai.base.schemas import PRUrl
 from lgtm_ai.discuss.prompt import DiscussionNote, DiscussionThread
@@ -114,18 +112,26 @@ class GitlabClient(GitClient):
         ref = pr.sha if branch_name == "source" else pr.target_branch
         logger.info(
             "DEBUG get_file_contents: fetching file — path=%s ref_type=%s ref=%s (pr.sha=%s pr.target_branch=%s)",
-            file_path, str(branch_name), ref, pr.sha, pr.target_branch,
+            file_path,
+            str(branch_name),
+            ref,
+            pr.sha,
+            pr.target_branch,
         )
         try:
             file = project.files.get(
                 file_path=file_path,
                 ref=ref,
             )
-            logger.info("DEBUG get_file_contents: GitLab API returned file object (content len=%d)", len(file.content or ""))
+            logger.info(
+                "DEBUG get_file_contents: GitLab API returned file object (content len=%d)", len(file.content or "")
+            )
         except gitlab.exceptions.GitlabError as err:
             logger.warning(
                 "DEBUG get_file_contents: GitLab API failed for path=%s ref=%s — error=%s",
-                file_path, ref, err,
+                file_path,
+                ref,
+                err,
             )
             return None
 
@@ -135,7 +141,8 @@ class GitlabClient(GitClient):
         except (binascii.Error, UnicodeDecodeError) as err:
             logger.warning(
                 "DEBUG get_file_contents: decode failed for %s — error=%s",
-                file_path, err,
+                file_path,
+                err,
             )
             return None
         return content
@@ -149,7 +156,7 @@ class GitlabClient(GitClient):
             project = _get_project_from_url(self.client, pr_url.repo_path)
             pr = project.mergerequests.get(pr_url.pr_number)
             discussion = pr.discussions.get(discussion_id)
-        except gitlab.exceptions.GitlabError as err:
+        except gitlab.exceptions.GitlabError:
             logger.error("Failed to retrieve discussion %s from MR %s", discussion_id, pr_url.full_url)
             raise
 
@@ -162,7 +169,7 @@ class GitlabClient(GitClient):
         #   - .list() may not exist at all (some versions)
         #   - notes may be embedded in the response data directly
         # We try multiple access patterns to be robust.
-        raw_notes = self._fetch_discussion_notes(discussion, project, discussion_id)
+        raw_notes = self._fetch_discussion_notes(discussion, discussion_id)
 
         for note_data in raw_notes:
             if note_data.get("system"):
@@ -185,19 +192,25 @@ class GitlabClient(GitClient):
         if file_path:
             logger.info(
                 "DEBUG get_discussion: fetching file content — path=%s line=%d branch=source",
-                file_path, line_number,
+                file_path,
+                line_number,
             )
             import traceback as _tb
 
             try:
-                logger.debug("DEBUG get_discussion: calling get_file_contents — pr_url type=%r pr_url.source=%r", type(pr_url), getattr(pr_url, "source", "<NO SOURCE ATTR>"))
+                logger.debug(
+                    "DEBUG get_discussion: calling get_file_contents — pr_url type=%r pr_url.source=%r",
+                    type(pr_url),
+                    getattr(pr_url, "source", "<NO SOURCE ATTR>"),
+                )
                 file_content = self.get_file_contents(pr_url, file_path, "source")
             except Exception:
                 logger.error("get_file_contents failed for %s:\n%s", file_path, _tb.format_exc())
                 raise
             logger.info(
                 "DEBUG get_discussion: file content fetch result — path=%s file_content_len=%s",
-                file_path, len(file_content) if file_content else None,
+                file_path,
+                len(file_content) if file_content else None,
             )
         else:
             logger.warning("DEBUG get_discussion: no file_path extracted from notes — file_content will be None")
@@ -205,17 +218,17 @@ class GitlabClient(GitClient):
         return DiscussionThread(notes, file_path, line_number, file_content)
 
     def _fetch_discussion_notes(
-        self, discussion: Any, project: Any, discussion_id: str
+        self, discussion: gitlab.v4.objects.ProjectMergeRequestDiscussion, discussion_id: str
     ) -> list[dict[str, Any]]:
         """Return the raw note dicts embedded in a fetched MR discussion."""
         notes = discussion.attributes.get("notes")
         if notes:
             logger.debug("Discussion %s: %d embedded notes", discussion_id, len(notes))
-            return notes
+            return cast(list[dict[str, Any]], notes)
 
         logger.warning("No notes found in discussion %s", discussion_id)
         return []
-    
+
     def _parse_gitlab_git_diff(self, diffs: list[dict[str, object]]) -> list[DiffResult]:
         parsed_diffs: list[DiffResult] = []
         for diff in diffs:

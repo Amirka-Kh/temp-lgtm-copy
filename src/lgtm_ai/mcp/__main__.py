@@ -66,7 +66,9 @@ def get_lgtm_review(
         config_file=config_file,
     ).resolve_config(target)
 
-    agent_extra_settings = AgentSettings(retries=resolved_config.ai_retries)
+    agent_extra_settings = AgentSettings(
+        retries=resolved_config.ai_retries, request_timeout=resolved_config.ai_request_timeout
+    )
     code_reviewer = CodeReviewer(
         reviewer_agent=get_reviewer_agent_with_settings(agent_extra_settings),
         summarizing_agent=get_summarizing_agent_with_settings(agent_extra_settings),

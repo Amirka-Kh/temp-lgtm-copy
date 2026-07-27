@@ -61,9 +61,9 @@ def build_discuss_prompt(thread: DiscussionThread, user_message: str) -> str:
 
     # Original review note
     lines.append("Here is the original review note I posted:")
-    lines.append(f"```")
+    lines.append("```")
     lines.append(original_note.body)
-    lines.append(f"```")
+    lines.append("```")
     lines.append("")
 
     # Full file content (if available) for complete context
@@ -71,7 +71,7 @@ def build_discuss_prompt(thread: DiscussionThread, user_message: str) -> str:
         lines.append("Here is the full source file referenced by the review note:")
         lines.append(f"```{thread.file_path or 'unknown'}")
         lines.append(thread.file_content)
-        lines.append(f"```")
+        lines.append("```")
         if thread.line_number:
             lines.append("")
             lines.append(f"The review comment targets line {thread.line_number}.")
@@ -87,16 +87,16 @@ def build_discuss_prompt(thread: DiscussionThread, user_message: str) -> str:
         lines.append("Here is the conversation history on this thread so far:")
         for note in other_notes:
             lines.append(f"[{note.author}] ({note.created_at}):")
-            lines.append(f"```")
+            lines.append("```")
             lines.append(note.body)
-            lines.append(f"```")
+            lines.append("```")
             lines.append("")
 
     # User's question
-    lines.append(f"The user is asking the following question:")
-    lines.append(f"```")
+    lines.append("The user is asking the following question:")
+    lines.append("```")
     lines.append(user_message)
-    lines.append(f"```")
+    lines.append("```")
     lines.append("")
 
     # Response instructions
@@ -116,10 +116,10 @@ def _build_prompt_no_notes(thread: DiscussionThread, user_message: str) -> str:
         "",
         "The discussion thread appears to be empty or has no retrievable notes.",
         "",
-        f"The user is asking the following question:",
-        f"```",
+        "The user is asking the following question:",
+        "```",
         user_message,
-        f"```",
+        "```",
         "",
         "If you have code context, use it to provide a helpful response. Otherwise, acknowledge that "
         "the original review note could not be retrieved and answer based on the code context alone.",
@@ -130,6 +130,6 @@ def _build_prompt_no_notes(thread: DiscussionThread, user_message: str) -> str:
         lines.insert(6, "Here is the available full source file:")
         lines.insert(6, f"```{thread.file_path or 'unknown'}")
         lines.insert(6, thread.file_content)
-        lines.insert(6, f"```")
+        lines.insert(6, "```")
 
     return "\n".join(lines)

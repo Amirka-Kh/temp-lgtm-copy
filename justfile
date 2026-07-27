@@ -4,7 +4,7 @@ venv := ".venv"
 bin := venv + "/bin"
 python_version := "python3.14"
 run := "poetry run"
-target_dirs := "src tests scripts"
+target_dirs := "src scripts"
 image := "docker.io/elementsinteractive/lgtm-ai"
 
 # SENTINELS

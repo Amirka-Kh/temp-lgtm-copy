@@ -2,12 +2,12 @@
 
 import logging
 
-from pydantic_ai import Agent
-
 from lgtm_ai.ai.agent import get_ai_model
-from lgtm_ai.discuss.prompt import DiscussionThread, build_discuss_prompt
+from lgtm_ai.base.schemas import PRSource, PRUrl
+from lgtm_ai.discuss.prompt import build_discuss_prompt
 from lgtm_ai.git_client.base import GitClient
 from lgtm_ai.git_client.exceptions import PublishGuideError
+from pydantic_ai import Agent
 
 logger = logging.getLogger("lgtm.discuss")
 
@@ -23,7 +23,7 @@ class DiscussClient:
 
     def discuss(
         self,
-        pr_url: object,  # PRUrl instance with source attribute
+        pr_url: PRUrl,
         discussion_id: str,
         user_message: str,
     ) -> str:
@@ -50,19 +50,22 @@ class DiscussClient:
             raise
         logger.info(
             "Discussion fetched: %d notes, file=%s line=%s file_content_len=%s",
-            len(thread.notes), thread.file_path, thread.line_number,
+            len(thread.notes),
+            thread.file_path,
+            thread.line_number,
             len(thread.file_content) if thread.file_content else None,
         )
 
         prompt = build_discuss_prompt(thread, user_message)
         logger.info(
             "DEBUG discuss client: prompt length=%d file_content_in_prompt=%s",
-            len(prompt), "yes" if thread.file_content else "no",
+            len(prompt),
+            "yes" if thread.file_content else "no",
         )
 
         logger.info("Calling AI model '%s' for discussion response", self.model_name)
         model = get_ai_model(model_name=self.model_name, api_key=self.api_key, model_url=self.model_url)
-        agent = Agent[None, str](deps_type=None, output_type=str)
+        agent: Agent[None, str] = Agent(output_type=str)
         raw_res = agent.run_sync(model=model, user_prompt=prompt)
         response = raw_res.output
 
@@ -71,7 +74,7 @@ class DiscussClient:
 
     def reply_to_discussion(
         self,
-        pr_url: object,  # PRUrl instance with source attribute
+        pr_url: PRUrl,
         discussion_id: str,
         response: str,
     ) -> None:
@@ -82,30 +85,25 @@ class DiscussClient:
             discussion_id: The ID of the discussion thread
             response: The AI-generated response to post
         """
-        from lgtm_ai.base.schemas import PRSource
-
         logger.info("Posting reply to discussion '%s'", discussion_id)
 
+        source = pr_url.source
+        if source == PRSource.gitlab:
+            reply = self._reply_gitlab
+        elif source == PRSource.github:
+            reply = self._reply_github
+        else:
+            logger.warning("Unknown or unsupported source for discussion reply: %s", source)
+            raise PublishGuideError(f"Discussion replies not supported for source: {source}")
+
         try:
-            if isinstance(pr_url, object):
-                source = getattr(pr_url, "source", None)
-            else:
-                source = None
-
-            if source == PRSource.gitlab:
-                self._reply_gitlab(pr_url, discussion_id, response)  # type: ignore[arg-type]
-            elif source == PRSource.github:
-                self._reply_github(pr_url, discussion_id, response)  # type: ignore[arg-type]
-            else:
-                logger.warning("Unknown or unsupported source for discussion reply: %s", source)
-                raise NotImplementedError(f"Discussion replies not supported for source: {source}")
-
+            reply(pr_url, discussion_id, response)
             logger.info("Reply posted successfully")
         except Exception as err:
             logger.error("Failed to post reply to discussion '%s': %s", discussion_id, err)
             raise PublishGuideError(str(err)) from err
 
-    def _reply_gitlab(self, pr_url: object, discussion_id: str, response: str) -> None:
+    def _reply_gitlab(self, pr_url: PRUrl, discussion_id: str, response: str) -> None:
         """Post a reply inside an existing GitLab MR discussion thread.
 
         GitLab API: POST /projects/:id/merge_requests/:mr_iid/discussions/:discussion_id/notes
@@ -114,8 +112,8 @@ class DiscussClient:
 
         try:
             gl = self.git_client.client  # type: ignore[attr-defined]
-            project_path = getattr(pr_url, "repo_path", None)
-            mr_num = getattr(pr_url, "pr_number", None)
+            project_path = pr_url.repo_path
+            mr_num = pr_url.pr_number
 
             if not project_path or not mr_num:
                 raise ValueError("Missing repo_path or pr_number from PRUrl")
@@ -128,28 +126,22 @@ class DiscussClient:
             logger.error("GitLab API error while posting reply: %s", err)
             raise
 
-    def _reply_github(self, pr_url: object, discussion_id: str, response: str) -> None:
+    def _reply_github(self, pr_url: PRUrl, discussion_id: str, response: str) -> None:
         """Post a reply to a GitHub PR (creates a general PR comment since review comments don't support replies)."""
         import github
 
-        from lgtm_ai.git_client.utils import get_git_client as _get_git_client
+        repo_path = pr_url.repo_path
+        mr_num = pr_url.pr_number
+        if not repo_path or not mr_num:
+            raise ValueError("Missing repo_path or pr_number from PRUrl")
 
         try:
             gh = self.git_client.client  # type: ignore[attr-defined]
-            repo_path = pr_url.repo_path if hasattr(pr_url, "repo_path") else None
-            mr_num = pr_url.pr_number if hasattr(pr_url, "pr_number") else None
-
-            if not repo_path or not mr_num:
-                raise ValueError("Missing repo_path or pr_number from PRUrl")
-
-            github_client = github.Github(gh.access_token)  # type: ignore[attr-defined]
+            github_client = github.Github(gh.access_token)
             repo = github_client.get_repo(repo_path)
             pr = repo.get_pull(mr_num)
 
-            reply_text = (
-                f"**AI Reply to Review Comment #{discussion_id}:**\n\n"
-                f"{response}"
-            )
+            reply_text = f"**AI Reply to Review Comment #{discussion_id}:**\n\n{response}"
             pr.create_issue_comment(reply_text)
         except github.GithubException as err:
             logger.error("GitHub API error while posting reply: %s", err)

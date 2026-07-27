@@ -18,13 +18,13 @@ from lgtm_ai.base.constants import DEFAULT_HTTPX_TIMEOUT
 from lgtm_ai.base.exceptions import NothingToReviewError
 from lgtm_ai.base.schemas import IssuesPlatform, LocalRepository, OutputFormat, PRUrl
 from lgtm_ai.base.utils import git_source_supports_multiline_suggestions
-from lgtm_ai.config.constants import DEFAULT_INPUT_TOKEN_LIMIT
+from lgtm_ai.config.constants import DEFAULT_AI_REQUEST_TIMEOUT, DEFAULT_INPUT_TOKEN_LIMIT
 from lgtm_ai.config.handler import CliOptions, ConfigHandler, ResolvedConfig
+from lgtm_ai.discuss import DiscussClient
 from lgtm_ai.formatters.base import Formatter
 from lgtm_ai.formatters.json import JsonFormatter
 from lgtm_ai.formatters.markdown import MarkDownFormatter
 from lgtm_ai.formatters.pretty import PrettyFormatter
-from lgtm_ai.discuss import DiscussClient
 from lgtm_ai.git_client.base import GitClient
 from lgtm_ai.git_client.utils import get_git_client
 from lgtm_ai.jira.jira import JiraIssuesClient
@@ -105,6 +105,11 @@ def _common_options[**P, T](func: Callable[P, T]) -> Callable[P, T]:
         type=IntOrNoLimitType(),
         help=f"Maximum number of input tokens allowed to send to all AI models in total (defaults to {DEFAULT_INPUT_TOKEN_LIMIT:,}). Pass 'no-limit' to disable the limit.",
     )
+    @click.option(
+        "--ai-request-timeout",
+        type=IntOrNoLimitType(),
+        help=f"Timeout in seconds for each individual request to the AI model (defaults to {DEFAULT_AI_REQUEST_TIMEOUT}). Pass 'no-limit' to fall back to the AI provider client defaults.",
+    )
     @click.option("--verbose", "-v", count=True, help="Set logging level.")
     @functools.wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
@@ -160,9 +165,9 @@ def _common_options[**P, T](func: Callable[P, T]) -> Callable[P, T]:
     "additional_context",
     multiple=True,
     metavar="PROMPT:FILE_URL",
-    help="Additional context file or URL for the LLM review. Can be a repo-relative path or URL. "
-         "Repeat to add multiple contexts. Use format 'prompt:path'. If no colon is provided, "
-         "the path/URL itself becomes the prompt.",
+    help="Additional context file or URL for the LLM review. Can be a repo-relative path, an absolute "
+    "local file path, or a URL. Repeat to add multiple contexts. Use format 'prompt:path'. If no "
+    "prompt is provided, the path/URL itself becomes the prompt.",
 )
 def review(target: PRUrl | LocalRepository, config: str | None, verbose: int, **config_kwargs: object) -> None:
     """Review a Pull Request or local repository using AI.
@@ -187,7 +192,9 @@ def review(target: PRUrl | LocalRepository, config: str | None, verbose: int, **
         config_file=config,
     ).resolve_config(target)
 
-    agent_extra_settings = AgentSettings(retries=resolved_config.ai_retries)
+    agent_extra_settings = AgentSettings(
+        retries=resolved_config.ai_retries, request_timeout=resolved_config.ai_request_timeout
+    )
     formatter: Formatter[Any] = MarkDownFormatter(
         add_ranges_to_suggestions=git_source_supports_multiline_suggestions(target.source)
     )
@@ -258,7 +265,9 @@ def guide(
         cli_args=CliOptions(**config_kwargs),
         config_file=config,
     ).resolve_config(target)
-    agent_extra_settings = AgentSettings(retries=resolved_config.ai_retries)
+    agent_extra_settings = AgentSettings(
+        retries=resolved_config.ai_retries, request_timeout=resolved_config.ai_request_timeout
+    )
     git_client = get_git_client(
         source=target.source, token=resolved_config.git_api_key, formatter=MarkDownFormatter(), url=target.base_url
     )
@@ -316,7 +325,6 @@ def discuss(
         logger.error("Discuss command requires a Pull/Merge Request URL, not a local repository.")
         raise click.Abort()
 
-    from lgtm_ai.base.schemas import PRSource
     from lgtm_ai.git_client.exceptions import PublishGuideError
 
     logger.info("lgtm-ai version: %s", __version__)
@@ -329,11 +337,13 @@ def discuss(
         config_file=config,
     ).resolve_config(target)
 
-    agent_extra_settings = AgentSettings(retries=resolved_config.ai_retries)
     logger.debug("get_git_client called with source=%r", target.source)
     git_client = get_git_client(
         source=target.source, token=resolved_config.git_api_key, formatter=MarkDownFormatter(), url=target.base_url
     )
+    if git_client is None:
+        logger.error("Could not create a git client for source %s", target.source)
+        raise click.Abort()
 
     discuss_client = DiscussClient(
         git_client=git_client,
@@ -349,7 +359,7 @@ def discuss(
     except Exception as err:
         logger.error("Failed to generate AI response for discussion: %s", err)
         printer(f"Error: {err}")
-        raise click.Abort()
+        raise click.Abort() from err
 
     if not resolved_config.silent:
         printer(response)

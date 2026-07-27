@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import tomllib
 import warnings
 from pathlib import Path
@@ -7,7 +8,12 @@ from typing import Annotated, Any, Self, get_args, override
 
 from lgtm_ai.ai.schemas import AdditionalContext, CommentCategory, SupportedAIModels
 from lgtm_ai.base.schemas import IntOrNoLimit, IssuesPlatform, LocalRepository, OutputFormat, PRUrl
-from lgtm_ai.config.constants import DEFAULT_AI_MODEL, DEFAULT_INPUT_TOKEN_LIMIT, DEFAULT_ISSUE_REGEX
+from lgtm_ai.config.constants import (
+    DEFAULT_AI_MODEL,
+    DEFAULT_AI_REQUEST_TIMEOUT,
+    DEFAULT_INPUT_TOKEN_LIMIT,
+    DEFAULT_ISSUE_REGEX,
+)
 from lgtm_ai.config.exceptions import (
     ConfigFileNotFoundError,
     InvalidConfigFileError,
@@ -54,6 +60,7 @@ class CliOptions(BaseModel):
     silent: bool | None = None
     ai_retries: int | None = None
     ai_input_tokens_limit: IntOrNoLimit | None = None
+    ai_request_timeout: IntOrNoLimit | None = None
     issues_url: str | None = None
     issues_regex: str | None = None
     issues_platform: IssuesPlatform | None = None
@@ -117,6 +124,11 @@ class ResolvedConfig(
         DEFAULT_INPUT_TOKEN_LIMIT
     )
     """Maximum number of input tokens allowed to send to all AI models in total."""
+
+    ai_request_timeout: Annotated[int | None, BeforeValidator(lambda v: v if v != "no-limit" else None)] = (
+        DEFAULT_AI_REQUEST_TIMEOUT
+    )
+    """Timeout in seconds for each individual request to the AI model."""
 
     issues_url: HttpUrl | None = None
     """The URL of the issues page to retrieve additional context from."""
@@ -327,7 +339,11 @@ class ConfigHandler:
         """
         parsed: list[tuple[str, str]] = []
         for entry in raw:
-            if ":" in entry:
+            if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", entry):
+                # A bare URL without a prompt prefix; splitting on ":" would mangle the scheme.
+                prompt = f"Additional context from {entry}"
+                file_url = entry
+            elif ":" in entry:
                 prompt, file_url = entry.split(":", 1)
                 prompt = prompt.strip()
             else:

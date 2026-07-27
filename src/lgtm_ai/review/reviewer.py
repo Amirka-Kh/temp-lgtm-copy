@@ -14,6 +14,7 @@ from lgtm_ai.git_client.base import GitClient
 from lgtm_ai.git_client.schemas import PRDiff, PRMetadata
 from lgtm_ai.review.context import ContextRetriever
 from lgtm_ai.review.exceptions import (
+    BaseAIError,
     handle_ai_exceptions,
 )
 from lgtm_ai.review.prompt_generators import PromptGenerator
@@ -38,7 +39,8 @@ class CodeReviewer:
     - Generate prompts for the AI agents using a PromptGenerator, tailored to the PR and its context.
     - Run the reviewer agent to produce an initial review, including inline comments and a summary.
     - Optionally fetch and incorporate related issue context if configured.
-    - Run the summarizing agent to produce a final, polished review response.
+    - Run the summarizing agent to produce a final, polished review response. If the summarizing
+      agent fails, the initial review is used as the final review instead of failing the whole run.
     - Track and aggregate usage statistics for AI model calls.
     - Return a Review object containing the PR diff, final review response, and metadata about the review process.
 
@@ -192,26 +194,37 @@ class CodeReviewer:
         total_usage: RunUsage,
         usage_limits: UsageLimits,
     ) -> tuple[ReviewResponse, RunUsage]:
-        """Summarize the initial review with the summarizing agent."""
+        """Summarize the initial review with the summarizing agent.
+
+        The summarizing agent only refines an already complete review, so if it fails
+        (timeouts, server errors, usage limits, invalid responses, etc.), the initial
+        review is returned as-is instead of losing the whole review.
+        """
         logger.info("Summarizing Agent is refining the initial review")
         summary_prompt = prompt_generator.generate_summarizing_prompt(
             pr_diff=pr_diff, raw_review=initial_review_response
         )
-        with handle_ai_exceptions():
-            final_res = self.summarizing_agent.run_sync(
-                model=self.model,
-                user_prompt=summary_prompt,
-                deps=SummarizingDeps(configured_categories=self.config.categories),
-                usage=total_usage,
-                usage_limits=usage_limits,
+        try:
+            with handle_ai_exceptions():
+                final_res = self.summarizing_agent.run_sync(
+                    model=self.model,
+                    user_prompt=summary_prompt,
+                    deps=SummarizingDeps(configured_categories=self.config.categories),
+                    usage=total_usage,
+                    usage_limits=usage_limits,
+                )
+        except BaseAIError as err:
+            logger.warning(
+                "The summarizing agent failed (%s); falling back to the initial review without refinement.", err
             )
+            return initial_review_response, total_usage
         usage = final_res.usage
         # _log_review_output_state("final", final_res.output)
         return final_res.output, usage
 
 
 def _log_review_output_state(stage: str, review: ReviewResponse) -> None:
-    """Log raw text state of LLM output for debugging formatting issues.
+    r"""Log raw text state of LLM output for debugging formatting issues.
 
     Checks for escaped sequences (\\n), structural artifacts (<tags>), and other
     anomalies that indicate the LLM produced malformed text fields.

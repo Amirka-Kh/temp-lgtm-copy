@@ -491,6 +491,8 @@ class TestMarkdownFormatter:
             "",
             "- **ai_input_tokens_limit**: `500000`",
             "",
+            "- **ai_request_timeout**: `300`",
+            "",
             "- **issues_url**: `https://your-repo.com/issues`",
             "",
             "- **issues_regex**: `ISSUE-\\d+`",

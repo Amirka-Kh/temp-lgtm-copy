@@ -2,6 +2,7 @@ from unittest import mock
 
 from lgtm_ai.ai.schemas import Review, ReviewGuide
 from lgtm_ai.base.schemas import PRUrl
+from lgtm_ai.discuss.prompt import DiscussionNote, DiscussionThread
 from lgtm_ai.git.parser import DiffFileMetadata, DiffResult, ModifiedLine
 from lgtm_ai.git_client.base import GitClient
 from lgtm_ai.git_client.schemas import ContextBranch, IssueContent, PRDiff, PRMetadata
@@ -64,3 +65,11 @@ class MockGitClient(GitClient):
 
     def get_file_contents(self, pr_url: PRUrl, file_path: str, branch_name: ContextBranch) -> str | None:
         return f"contents-of-{file_path}-context"
+
+    def get_discussion(self, pr_url: PRUrl, discussion_id: str) -> DiscussionThread:
+        return DiscussionThread(
+            notes=[DiscussionNote("a note", "an author", "2025-01-01")],
+            file_path="file-1.txt",
+            line_number=1,
+            file_content="contents-of-file-1.txt-context",
+        )

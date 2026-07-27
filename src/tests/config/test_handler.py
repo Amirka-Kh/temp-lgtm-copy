@@ -357,6 +357,19 @@ class TestAdditionalContextParsing:
         result = ConfigHandler._parse_additional_context(("./docs/style.md",))
         assert result == [("Additional context from ./docs/style.md", "./docs/style.md")]
 
+    def test_parse_bare_url_without_prompt(self) -> None:
+        """A bare URL must not be split on the scheme colon."""
+        result = ConfigHandler._parse_additional_context(("https://example.com/guide.md",))
+        assert result == [("Additional context from https://example.com/guide.md", "https://example.com/guide.md")]
+
+    def test_parse_absolute_path_without_prompt(self) -> None:
+        result = ConfigHandler._parse_additional_context(("/home/user/guide.md",))
+        assert result == [("Additional context from /home/user/guide.md", "/home/user/guide.md")]
+
+    def test_parse_prompt_colon_absolute_path(self) -> None:
+        result = ConfigHandler._parse_additional_context(("Guidelines:/home/user/guide.md",))
+        assert result == [("Guidelines", "/home/user/guide.md")]
+
     def test_parse_multiple_entries(self) -> None:
         result = ConfigHandler._parse_additional_context(
             (
