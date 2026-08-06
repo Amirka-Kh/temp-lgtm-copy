@@ -158,9 +158,7 @@ class CodeReviewer:
         usage_limits: UsageLimits,
     ) -> ReviewResponse:
         """Perform an initial review of the PR with the reviewer agent."""
-        context = self.context_retriever.get_code_context(
-            target=pr_url, pr_diff=pr_diff, exclude=self.config.exclude
-        )
+        context = self.context_retriever.get_code_context(target=pr_url, pr_diff=pr_diff, exclude=self.config.exclude)
         additional_context = self.context_retriever.get_additional_context(
             pr_url=pr_url,
             additional_context=self.config.additional_context,
