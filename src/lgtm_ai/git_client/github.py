@@ -18,7 +18,7 @@ from lgtm_ai.git_client.exceptions import (
     PullRequestDiffError,
     PullRequestMetadataError,
 )
-from lgtm_ai.git_client.schemas import ContextBranch, IssueContent, PRDiff, PRMetadata
+from lgtm_ai.git_client.schemas import ContextBranch, ExistingReviewComment, IssueContent, PRDiff, PRMetadata
 from pydantic import HttpUrl
 
 logger = logging.getLogger("lgtm.git")
@@ -128,6 +128,35 @@ class GitHubClient(GitClient):
             title=issue.title or "",
             description=issue.body or "",
         )
+
+    def get_review_comments(self, pr_url: PRUrl) -> list[ExistingReviewComment]:
+        """Fetch the inline review comments and the PR-level comments already posted, oldest first."""
+        logger.info("Fetching existing comments from GitHub")
+        comments: list[ExistingReviewComment] = []
+        try:
+            pr = _get_pr(self.client, pr_url)
+            for review_comment in pr.get_review_comments():
+                body = review_comment.body or ""
+                comments.append(
+                    ExistingReviewComment(
+                        body=body,
+                        author=review_comment.user.login if review_comment.user else "unknown",
+                        file_path=review_comment.path,
+                        line_number=review_comment.line or review_comment.original_line,
+                    )
+                )
+            for issue_comment in pr.get_issue_comments():
+                body = issue_comment.body or ""
+                comments.append(
+                    ExistingReviewComment(
+                        body=body,
+                        author=issue_comment.user.login if issue_comment.user else "unknown",
+                    )
+                )
+        except github.GithubException as err:
+            logger.warning("Failed to retrieve existing comments from GitHub, continuing without them: %s", err)
+            return []
+        return comments
 
     def publish_guide(self, pr_url: PRUrl, guide: ReviewGuide) -> None:
         pr = _get_pr(self.client, pr_url)

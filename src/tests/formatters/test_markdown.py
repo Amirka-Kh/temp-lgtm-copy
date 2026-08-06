@@ -32,6 +32,7 @@ class TestMarkdownFormatter:
                 created_at="2025-05-15T09:43:01.654374+00:00",
                 usage=MOCK_USAGE,
                 config=None,
+                warnings=(),
                 spec=PublishMetadata,
             ),
             review_response=ReviewResponse(
@@ -372,6 +373,7 @@ class TestMarkdownFormatter:
                 created_at="2025-05-15T09:43:01.654374+00:00",
                 usage=MOCK_USAGE,
                 config=None,
+                warnings=(),
                 spec=PublishMetadata,
             ),
         )
@@ -449,6 +451,7 @@ class TestMarkdownFormatter:
                 created_at="2025-05-15T09:43:01.654374+00:00",
                 usage=MOCK_USAGE,
                 config=config.model_dump(),
+                warnings=(),
                 spec=PublishMetadata,
             ),
             review_response=ReviewResponse(
@@ -480,6 +483,8 @@ class TestMarkdownFormatter:
             "- **exclude**: `()`",
             "",
             "- **additional_context**: `({'file_url': 'https://foo.com', 'prompt': 'a prompt', 'context': None},)`",
+            "",
+            "- **comments_context**: `True`",
             "",
             "- **publish**: `False`",
             "",

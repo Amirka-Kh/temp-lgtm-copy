@@ -27,6 +27,12 @@ _UNIFIED_DIFF_DESCRIPTION = (
     " `@@ -old_start,count +new_start,count @@` headers indicate where in the file changes occur."
 )
 
+# Dropped from both prompts.
+# lgtm-cli collects structured output through a pydantic-ai `final_result` tool call; the skill runs inside Claude
+# Code and returns JSON text instead, described by the output schemas below. Keeping the tool-call instruction here
+# would directly contradict them.
+_SKILL_OUTPUT_TRANSPORT = ""
+
 # Replaces <hunk-boundary> in the summarizer prompt.
 # Drops the JSON field names (hunk_start_new / hunk_start_old) irrelevant to unified diff.
 _SKILL_HUNK_BOUNDARY = (
@@ -84,6 +90,11 @@ def _replace_xml_block(text: str, tag: str, replacement: str) -> str:
     return re.sub(rf"<{tag}>.*?</{tag}>", replacement, text, flags=re.DOTALL)
 
 
+def _collapse_blank_runs(text: str) -> str:
+    """Collapse runs of blank lines left behind by removed blocks down to a single blank line."""
+    return re.sub(r"\n{3,}", "\n\n", text)
+
+
 def _inject_into_sentinel(text: str, sentinel: str, content: str) -> str:
     """Replace content between <!-- BEGIN:sentinel --> and <!-- END:sentinel --> markers."""
     pattern = rf"(<!-- BEGIN:{re.escape(sentinel)} -->).*?(<!-- END:{re.escape(sentinel)} -->)"
@@ -94,13 +105,15 @@ def _inject_into_sentinel(text: str, sentinel: str, content: str) -> str:
 def build_reviewer_prompt() -> str:
     prompt = REVIEWER_SYSTEM_PROMPT.strip()
     prompt = _replace_xml_block(prompt, "diff-format", _UNIFIED_DIFF_DESCRIPTION)
-    return prompt + "\n" + _REVIEWER_OUTPUT_SCHEMA
+    prompt = _replace_xml_block(prompt, "output-transport", _SKILL_OUTPUT_TRANSPORT)
+    return _collapse_blank_runs(prompt) + "\n" + _REVIEWER_OUTPUT_SCHEMA
 
 
 def build_summarizer_prompt() -> str:
     prompt = SUMMARIZING_SYSTEM_PROMPT.strip()
     prompt = _replace_xml_block(prompt, "hunk-boundary", _SKILL_HUNK_BOUNDARY)
-    return prompt + "\n" + _SUMMARIZER_OUTPUT_SCHEMA
+    prompt = _replace_xml_block(prompt, "output-transport", _SKILL_OUTPUT_TRANSPORT)
+    return _collapse_blank_runs(prompt) + "\n" + _SUMMARIZER_OUTPUT_SCHEMA
 
 
 def main() -> None:

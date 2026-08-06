@@ -16,7 +16,7 @@ from lgtm_ai.base.schemas import PRSource, PRUrl
 from lgtm_ai.formatters.base import Formatter
 from lgtm_ai.git_client.exceptions import PullRequestDiffError
 from lgtm_ai.git_client.gitlab import GitlabClient
-from lgtm_ai.git_client.schemas import IssueContent, PRDiff
+from lgtm_ai.git_client.schemas import ExistingReviewComment, IssueContent, PRDiff
 from pydantic import HttpUrl
 from tests.conftest import CopyingMock
 from tests.git_client.fixtures import FAKE_GUIDE, PARSED_GIT_DIFF
@@ -426,3 +426,73 @@ def test_get_issue_content_not_found() -> None:
     issues_url = HttpUrl("https://gitlab.com/foo/-/issues/1")
     result = client.get_issue_content(issues_url, "1")
     assert result is None
+
+
+def _mock_discussion(notes: list[dict[str, Any]]) -> mock.Mock:
+    return mock.Mock(attributes={"notes": notes})
+
+
+def test_get_review_comments_returns_positioned_and_plain_notes() -> None:
+    m_mr = mock_mr()
+    m_mr.discussions.list.return_value = [
+        _mock_discussion(
+            [
+                {
+                    "body": "inline point",
+                    "author": {"name": "reviewer"},
+                    "position": {"new_path": "a.py", "new_line": 12},
+                    "resolved": True,
+                }
+            ]
+        ),
+        _mock_discussion([{"body": "mr level point", "author": {"name": "author"}}]),
+    ]
+    client = mock_gitlab_client(mock_project(m_mr))
+
+    result = client.get_review_comments(MockGitlabUrl)
+
+    assert result == [
+        ExistingReviewComment(
+            body="inline point", author="reviewer", file_path="a.py", line_number=12, is_resolved=True
+        ),
+        ExistingReviewComment(body="mr level point", author="author"),
+    ]
+
+
+def test_get_review_comments_skips_system_notes() -> None:
+    """System notes ("merged", "changed target branch") are noise the reviewer can never repeat."""
+    m_mr = mock_mr()
+    m_mr.discussions.list.return_value = [
+        _mock_discussion(
+            [
+                {"body": "changed target branch", "author": {"name": "gitlab"}, "system": True},
+                {"body": "a real point", "author": {"name": "reviewer"}},
+            ]
+        )
+    ]
+    client = mock_gitlab_client(mock_project(m_mr))
+
+    assert [c.body for c in client.get_review_comments(MockGitlabUrl)] == ["a real point"]
+
+
+def test_get_review_comments_falls_back_to_the_old_path() -> None:
+    m_mr = mock_mr()
+    m_mr.discussions.list.return_value = [
+        _mock_discussion(
+            [{"body": "point", "author": {"name": "r"}, "position": {"old_path": "gone.py", "old_line": 3}}]
+        )
+    ]
+    client = mock_gitlab_client(mock_project(m_mr))
+
+    result = client.get_review_comments(MockGitlabUrl)[0]
+
+    assert (result.file_path, result.line_number) == ("gone.py", 3)
+
+
+def test_get_review_comments_returns_empty_when_gitlab_fails() -> None:
+    """A review without this context is still worth having, so a failure here must not abort the run."""
+    m_mr = mock_mr()
+    m_mr.discussions.list.side_effect = gitlab.exceptions.GitlabError("boom")
+    client = mock_gitlab_client(mock_project(m_mr))
+
+    assert client.get_review_comments(MockGitlabUrl) == []

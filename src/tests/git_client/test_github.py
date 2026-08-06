@@ -19,7 +19,7 @@ from lgtm_ai.formatters.base import Formatter
 from lgtm_ai.git.parser import DiffFileMetadata, DiffResult, ModifiedLine
 from lgtm_ai.git_client.exceptions import PullRequestDiffError
 from lgtm_ai.git_client.github import CommentBuilder, GitHubClient
-from lgtm_ai.git_client.schemas import IssueContent, PRDiff
+from lgtm_ai.git_client.schemas import ExistingReviewComment, IssueContent, PRDiff
 from pydantic import HttpUrl
 from tests.conftest import CopyingMock
 from tests.git_client.fixtures import FAKE_GUIDE
@@ -966,3 +966,39 @@ def test_comment_builder_determine_comment_side_left() -> None:
 
     result = builder._determine_comment_side(comment)
     assert result == "LEFT"
+
+
+def test_get_review_comments_returns_inline_and_pr_level_comments() -> None:
+    m_pr = mock_pr()
+    m_pr.get_review_comments.return_value = [
+        mock.Mock(body="inline point", user=mock.Mock(login="reviewer"), path="a.py", line=12, original_line=10)
+    ]
+    m_pr.get_issue_comments.return_value = [mock.Mock(body="pr level point", user=mock.Mock(login="author"))]
+    client = mock_github_client(mock_repo(m_pr))
+
+    result = client.get_review_comments(MockGithubUrl)
+
+    assert result == [
+        ExistingReviewComment(body="inline point", author="reviewer", file_path="a.py", line_number=12),
+        ExistingReviewComment(body="pr level point", author="author"),
+    ]
+
+
+def test_get_review_comments_falls_back_to_the_original_line() -> None:
+    m_pr = mock_pr()
+    m_pr.get_review_comments.return_value = [
+        mock.Mock(body="outdated point", user=mock.Mock(login="reviewer"), path="a.py", line=None, original_line=7)
+    ]
+    m_pr.get_issue_comments.return_value = []
+    client = mock_github_client(mock_repo(m_pr))
+
+    assert client.get_review_comments(MockGithubUrl)[0].line_number == 7
+
+
+def test_get_review_comments_returns_empty_when_github_fails() -> None:
+    """A review without this context is still worth having, so a failure here must not abort the run."""
+    m_pr = mock_pr()
+    m_pr.get_review_comments.side_effect = MockGithubException(500, "boom")
+    client = mock_github_client(mock_repo(m_pr))
+
+    assert client.get_review_comments(MockGithubUrl) == []

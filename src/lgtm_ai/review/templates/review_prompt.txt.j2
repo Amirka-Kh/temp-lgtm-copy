@@ -22,6 +22,15 @@ CONTEXT:
 {% endfor -%}
 {% endif -%}
 
+{% if existing_comments %}
+EXISTING REVIEW COMMENTS:
+Comments already posted on this PR, shortened. Do not make any of these points again.
+{% for comment in existing_comments %}
+- {% if comment.file_path %}`{{ comment.file_path }}`{% if comment.line_number %}:{{ comment.line_number }}{% endif %}{% else %}(PR-level){% endif %} — {{ comment.author }}{% if comment.is_own_comment %} (you, on an earlier run){% endif %}{% if comment.is_resolved %} [resolved]{% endif %}
+{{ comment.body }}
+{% endfor -%}
+{% endif -%}
+
 {% if additional_context %}
 ADDITIONAL CONTEXT:
 {% for context in additional_context %}

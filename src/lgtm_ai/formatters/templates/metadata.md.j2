@@ -1,4 +1,6 @@
-<details><summary>More information</summary>
+{% for warning in warnings %}> ⚠️ {{ warning }}
+
+{% endfor %}<details><summary>More information</summary>
 
 - **Id**: `{{ uuid }}`
 - **Model**: `{{ model_name }}`

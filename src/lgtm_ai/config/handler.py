@@ -59,6 +59,7 @@ class CliOptions(BaseModel):
     issues_platform: IssuesPlatform | None = None
     compare: str | None = None
     additional_context: tuple[str, ...] | None = None
+    comments_context: bool | None = None
 
     # Secrets
     git_api_key: str | None = None
@@ -100,6 +101,9 @@ class ResolvedConfig(
 
     additional_context: tuple[AdditionalContext, ...] = ()
     """Additional context to send to the LLM."""
+
+    comments_context: bool = True
+    """Send the comments already on the PR to the reviewer so it does not repeat points that have been made."""
 
     publish: bool = False
     """Publish the review to the git service as comments."""

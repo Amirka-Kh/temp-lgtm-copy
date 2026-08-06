@@ -10,13 +10,66 @@ from lgtm_ai.ai.schemas import (
 )
 from lgtm_ai.base.exceptions import LGTMException
 from lgtm_ai.base.schemas import LocalRepository, PRUrl
+from lgtm_ai.base.utils import file_matches_any_pattern, is_non_reviewable_file
 from lgtm_ai.git.repository import get_file_contents_from_local_repo
 from lgtm_ai.git_client.base import GitClient
-from lgtm_ai.git_client.schemas import ContextBranch, IssueContent, PRDiff, PRMetadata
+from lgtm_ai.git_client.schemas import ContextBranch, ExistingReviewComment, IssueContent, PRDiff, PRMetadata
+from lgtm_ai.review.comment_context import build_existing_comments_context
 from lgtm_ai.review.schemas import PRCodeContext
 from pydantic import HttpUrl
 
 logger = logging.getLogger("lgtm")
+
+
+def select_files_for_context(pr_diff: PRDiff, *, exclude: tuple[str, ...] = ()) -> list[str]:
+    """Pick the changed files whose full contents are worth fetching as reading context.
+
+    Every file dropped here saves up to two API round trips (the source branch, then the target branch as a fallback)
+    and, more importantly, keeps its whole content out of the prompt. Three things are dropped:
+
+    - files the user excluded — filtering after the fetch, as the prompt generator does, still pays for the download;
+    - files whose contents cannot be read, such as images and other binaries;
+    - files the diff says have no modified lines, which is what binary files, pure renames and mode-only changes look
+      like. There is nothing in them for the reviewer to comment on.
+
+    A file the diff says nothing about at all is kept: the git clients skip diffs they fail to parse, and "we could
+    not read the patch" is not the same as "nothing changed". Dropping those would silently strip the reviewer of all
+    context whenever diff parsing regressed.
+    """
+    files_in_diff = {diff.metadata.new_path for diff in pr_diff.diff}
+    files_with_changes = {diff.metadata.new_path for diff in pr_diff.diff if diff.modified_lines}
+
+    selected: list[str] = []
+    excluded: list[str] = []
+    non_reviewable: list[str] = []
+    unchanged: list[str] = []
+    for file_path in pr_diff.changed_files:
+        if file_matches_any_pattern(file_path, exclude):
+            excluded.append(file_path)
+        elif is_non_reviewable_file(file_path):
+            non_reviewable.append(file_path)
+        elif file_path in files_in_diff and file_path not in files_with_changes:
+            unchanged.append(file_path)
+        else:
+            selected.append(file_path)
+
+    if excluded or non_reviewable or unchanged:
+        logger.info(
+            "Code context: fetching %d of %d changed files (skipped %d excluded by configuration, "
+            "%d whose contents cannot be reviewed, %d with no modified lines in the diff)",
+            len(selected),
+            len(pr_diff.changed_files),
+            len(excluded),
+            len(non_reviewable),
+            len(unchanged),
+        )
+        logger.debug(
+            "Code context skipped: excluded=%s non_reviewable=%s no_modified_lines=%s",
+            excluded,
+            non_reviewable,
+            unchanged,
+        )
+    return selected
 
 
 class IssuesClient(Protocol):
@@ -37,16 +90,20 @@ class ContextRetriever:
         self._issues_client = issues_client
         self._httpx_client = httpx_client
 
-    def get_code_context(self, target: PRUrl | LocalRepository, pr_diff: PRDiff) -> PRCodeContext:
+    def get_code_context(
+        self, target: PRUrl | LocalRepository, pr_diff: PRDiff, exclude: tuple[str, ...] = ()
+    ) -> PRCodeContext:
         """Get the code context from the repository.
 
         It mimics the information a human reviewer might have access to, which usually implies
         only looking at the PR in question.
+
+        Only the files the reviewer can actually act on are fetched — see `select_files_for_context`.
         """
         logger.info("Fetching code context from repository")
         context = PRCodeContext(file_contents=[])
         branch: ContextBranch = "source"
-        for file_path in pr_diff.changed_files:
+        for file_path in select_files_for_context(pr_diff, exclude=exclude):
             logger.debug("Fetching content for file %s", file_path)
             if self._git_client and isinstance(target, PRUrl):
                 branch = "source"
@@ -120,6 +177,21 @@ class ContextRetriever:
                 extra_context.append(context)
 
         return extra_context or None
+
+    def get_existing_comments_context(
+        self, target: PRUrl | LocalRepository, pr_diff: PRDiff
+    ) -> list[ExistingReviewComment]:
+        """Get the comments already on the PR, condensed, so the reviewer does not repeat points already made.
+
+        A local repository has no PR to carry comments, so it always yields nothing.
+        """
+        if not self._git_client or not isinstance(target, PRUrl):
+            return []
+        logger.info("Fetching existing comments from the PR")
+        return build_existing_comments_context(
+            self._git_client.get_review_comments(target),
+            changed_files=pr_diff.changed_files,
+        )
 
     def get_issues_context(
         self, issues_url: HttpUrl, issues_regex: str, pr_metadata: PRMetadata

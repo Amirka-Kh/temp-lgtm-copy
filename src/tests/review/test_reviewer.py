@@ -10,16 +10,18 @@ from lgtm_ai.base.exceptions import NothingToReviewError
 from lgtm_ai.base.schemas import PRSource, PRUrl
 from lgtm_ai.config.constants import DEFAULT_AI_MODEL
 from lgtm_ai.config.handler import ResolvedConfig
-from lgtm_ai.git_client.schemas import PRDiff
+from lgtm_ai.git_client.schemas import ExistingReviewComment, PRDiff
 from lgtm_ai.review import CodeReviewer
 from lgtm_ai.review.context import ContextRetriever
 from lgtm_ai.review.exceptions import (
     ClientUsageLimitsExceededError,
+    ContextWindowExceededError,
     InvalidAIResponseError,
     ServerError,
     ServerUsageLimitsExceededError,
     UnknownAIError,
 )
+from lgtm_ai.review.reviewer import SUMMARIZING_FAILED_WARNING
 from pydantic import ValidationError
 from pydantic_ai import (
     AgentRunError,
@@ -40,6 +42,19 @@ from tests.review.utils import MOCK_DIFF, MockGitClient
 models.ALLOW_MODEL_REQUESTS = False
 
 
+LITELLM_CONTEXT_WINDOW_BODY = {
+    "message": (
+        "litellm.ContextWindowExceededError: litellm.BadRequestError: ContextWindowExceededError: "
+        "Custom_openaiException - request (101408 tokens) exceeds the available context size (65536 tokens), "
+        "try increasing it\nmodel=Qwen3.6-Flash."
+    ),
+    "type": None,
+    "param": None,
+    "code": "400",
+}
+"""Verbatim body of a real failure against a self-hosted Qwen behind litellm."""
+
+
 def _get_ai_validation_error(*, is_validation_error: bool) -> UnexpectedModelBehavior:
     exc = UnexpectedModelBehavior("Error")
     exc_lvl2 = Exception("Error level 2")
@@ -47,6 +62,16 @@ def _get_ai_validation_error(*, is_validation_error: bool) -> UnexpectedModelBeh
     exc_lvl2.__context__ = exc_lvl3
     exc.__context__ = exc_lvl2
 
+    return exc
+
+
+def _get_task_group_wrapped_validation_error() -> UnexpectedModelBehavior:
+    """Build the error shape pydantic-ai actually produces: the cause is buried inside an `ExceptionGroup`.
+
+    Agents run inside a task group, so the `ValidationError` is never reachable by following `__context__` alone.
+    """
+    exc = UnexpectedModelBehavior("Error")
+    exc.__context__ = ExceptionGroup("unhandled errors in a TaskGroup", [ValidationError("Invalid", [])])
     return exc
 
 
@@ -277,7 +302,7 @@ def test_summarizing_message_in_review(context_retriever: ContextRetriever) -> N
     test_summarizing_agent = get_summarizing_agent_with_settings()
     test_agent.run_sync.return_value = mock.Mock(
         output=ReviewResponse(summary="a", raw_score=1),
-        usage=lambda: RunUsage(requests=1, input_tokens=1041, output_tokens=6),
+        usage=RunUsage(requests=1, input_tokens=1041, output_tokens=6),
     )
 
     with (
@@ -298,28 +323,25 @@ def test_summarizing_message_in_review(context_retriever: ContextRetriever) -> N
             target=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab)
         )
 
-    expected_review_json = json.dumps(
-        {"summary": "a", "comments": [], "raw_score": 1}, indent=2
+    # The review is embedded verbatim, so it is dumped the same way the prompt generator dumps it.
+    expected_review_json = ReviewResponse(summary="a", raw_score=1).model_dump_json(indent=2)
+    expected_message = "\n".join(
+        [
+            "PR METADATA:",
+            "- Title: feat(#288): a title",
+            "- Description: bar",
+            "",
+            "PR DIFF:",
+            "```",
+            json.dumps([diff.model_dump() for diff in MOCK_DIFF]),
+            "```",
+            "",
+            "REVIEW:",
+            "```",
+            expected_review_json,
+            "```",
+        ]
     )
-    expected_message = textwrap.dedent(
-        f"""
-        PR METADATA:
-        - Title: feat(#288): a title
-        - Description: bar
-
-        PR DIFF:
-        ```
-        {json.dumps([diff.model_dump() for diff in MOCK_DIFF])}
-        ```
-
-        REVIEW:
-        ```
-        {expected_review_json}
-        ```
-
-
-        """
-    ).strip()
     _assert_agent_message(
         messages,
         expected_message,
@@ -464,6 +486,23 @@ def test_file_is_excluded_from_prompt(context_retriever: ContextRetriever) -> No
         (ModelHTTPError(312, "Error"), UnknownAIError),
         (_get_ai_validation_error(is_validation_error=True), InvalidAIResponseError),
         (_get_ai_validation_error(is_validation_error=False), UnknownAIError),
+        (_get_task_group_wrapped_validation_error(), InvalidAIResponseError),
+        # Context-window overflow has no status code of its own, so the body is the only signal. It must not be
+        # confused with a rate limit, which shares the 413.
+        (ModelHTTPError(400, "m", body=LITELLM_CONTEXT_WINDOW_BODY), ContextWindowExceededError),
+        (
+            ModelHTTPError(400, "m", body={"error": {"message": "This model's maximum context length is 8192 tokens"}}),
+            ContextWindowExceededError,
+        ),
+        (
+            ModelHTTPError(413, "m", body={"error": {"message": "prompt is too long: 250000 tokens > 200000 maximum"}}),
+            ContextWindowExceededError,
+        ),
+        (ModelHTTPError(413, "m", body={"error": {"message": "Request too large"}}), ServerUsageLimitsExceededError),
+        (ModelHTTPError(400, "m", body={"error": {"message": "Invalid tool schema"}}), UnknownAIError),
+        # The model never produced a usable structured output (e.g. it answered with plain text instead of calling
+        # the output tool), which is what a model without proper tool-calling support does.
+        (UnexpectedModelBehavior("Exceeded maximum output retries (1)"), InvalidAIResponseError),
         (UsageLimitExceeded("Error"), ClientUsageLimitsExceededError),
     ],
 )
@@ -485,6 +524,163 @@ def test_errors_are_handled_on_reviewer_agent(raised_error: Exception, expected_
     )
 
     with pytest.raises(expected_error):
+        code_reviewer.review(
+            target=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab)
+        )
+
+
+def _review_with_existing_comments(
+    existing_comments: list[ExistingReviewComment], *, comments_context: bool = True
+) -> list[ModelMessage]:
+    """Run a review against a git client carrying `existing_comments`, and return the captured agent messages."""
+    git_client = MockGitClient(existing_comments=existing_comments)
+    test_agent = get_reviewer_agent_with_settings()
+    test_summary_agent = get_summarizing_agent_with_settings()
+    with (
+        test_agent.override(model=TestModel()),
+        test_summary_agent.override(model=TestModel()),
+        capture_run_messages() as messages,
+    ):
+        CodeReviewer(
+            reviewer_agent=test_agent,
+            summarizing_agent=test_summary_agent,
+            model=mock.Mock(spec=OpenAIChatModel, model_name=DEFAULT_AI_MODEL),
+            git_client=git_client,
+            context_retriever=ContextRetriever(
+                git_client=git_client, issues_client=git_client, httpx_client=mock.Mock()
+            ),
+            config=ResolvedConfig(ai_api_key="", git_api_key="", comments_context=comments_context),
+        ).review(target=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab))
+    return messages
+
+
+def test_existing_comments_are_sent_to_the_reviewer(context_retriever: ContextRetriever) -> None:
+    messages = _review_with_existing_comments(
+        [
+            ExistingReviewComment(
+                body="🦉 The retry counter is never reset", author="lgtm", file_path="file-1.txt", line_number=3
+            )
+        ]
+    )
+
+    prompt = _get_user_prompt(messages)
+    assert "EXISTING REVIEW COMMENTS:" in prompt
+    assert "The retry counter is never reset" in prompt
+    assert "you, on an earlier run" in prompt
+
+
+def test_existing_comments_outside_the_diff_are_not_sent(context_retriever: ContextRetriever) -> None:
+    messages = _review_with_existing_comments(
+        [ExistingReviewComment(body="a point on an untouched file", author="dev", file_path="untouched.py")]
+    )
+
+    assert "EXISTING REVIEW COMMENTS:" not in _get_user_prompt(messages)
+
+
+def test_existing_comments_are_not_fetched_when_disabled(context_retriever: ContextRetriever) -> None:
+    messages = _review_with_existing_comments(
+        [ExistingReviewComment(body="🦉 a previous point", author="lgtm", file_path="file-1.txt")],
+        comments_context=False,
+    )
+
+    assert "EXISTING REVIEW COMMENTS:" not in _get_user_prompt(messages)
+
+
+def test_no_existing_comments_section_when_there_are_none(context_retriever: ContextRetriever) -> None:
+    assert "EXISTING REVIEW COMMENTS:" not in _get_user_prompt(_review_with_existing_comments([]))
+
+
+def _get_user_prompt(messages: list[ModelMessage]) -> str:
+    requests = _get_requests_from_messages(messages)
+    user_prompt = next(part for part in requests[0].parts if part.part_kind == "user-prompt")
+    return str(user_prompt.content)
+
+
+def _get_code_reviewer(
+    *,
+    reviewer_agent: mock.Mock,
+    summarizing_agent: mock.Mock,
+    context_retriever: ContextRetriever,
+) -> CodeReviewer:
+    return CodeReviewer(
+        reviewer_agent=reviewer_agent,
+        summarizing_agent=summarizing_agent,
+        model=mock.Mock(spec=OpenAIChatModel, model_name=DEFAULT_AI_MODEL),
+        git_client=MockGitClient(),
+        context_retriever=context_retriever,
+        config=ResolvedConfig(ai_api_key="", git_api_key=""),
+    )
+
+
+@pytest.mark.parametrize(
+    "raised_error",
+    [
+        UnexpectedModelBehavior("Exceeded maximum output retries (1)"),
+        ModelHTTPError(500, "Error"),
+        UsageLimitExceeded("Error"),
+        AgentRunError("Error"),
+    ],
+)
+def test_initial_review_is_published_when_summarizing_agent_fails(
+    context_retriever: ContextRetriever, raised_error: Exception
+) -> None:
+    """A failing summarizing agent degrades the review to the initial one instead of losing it."""
+    initial_review = ReviewResponse(summary="initial summary", raw_score=2)
+    reviewer_agent = mock.Mock()
+    reviewer_agent.run_sync.return_value = mock.Mock(
+        output=initial_review, usage=RunUsage(requests=1, input_tokens=10, output_tokens=5)
+    )
+    summarizing_agent = mock.Mock()
+    summarizing_agent.run_sync.side_effect = raised_error
+
+    code_reviewer = _get_code_reviewer(
+        reviewer_agent=reviewer_agent,
+        summarizing_agent=summarizing_agent,
+        context_retriever=context_retriever,
+    )
+    review = code_reviewer.review(
+        target=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab)
+    )
+
+    assert review.review_response == initial_review
+    assert review.metadata.warnings == (SUMMARIZING_FAILED_WARNING,)
+
+
+def test_no_warning_is_added_when_summarizing_agent_succeeds(context_retriever: ContextRetriever) -> None:
+    reviewer_agent = mock.Mock()
+    reviewer_agent.run_sync.return_value = mock.Mock(
+        output=ReviewResponse(summary="initial summary", raw_score=2), usage=RunUsage()
+    )
+    summarizing_agent = mock.Mock()
+    summarizing_agent.run_sync.return_value = mock.Mock(
+        output=ReviewResponse(summary="final summary", raw_score=4), usage=RunUsage()
+    )
+
+    code_reviewer = _get_code_reviewer(
+        reviewer_agent=reviewer_agent,
+        summarizing_agent=summarizing_agent,
+        context_retriever=context_retriever,
+    )
+    review = code_reviewer.review(
+        target=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab)
+    )
+
+    assert review.review_response.summary == "final summary"
+    assert review.metadata.warnings == ()
+
+
+def test_failing_reviewer_agent_still_raises(context_retriever: ContextRetriever) -> None:
+    """There is nothing to fall back to when the *initial* review is what failed."""
+    reviewer_agent = mock.Mock()
+    reviewer_agent.run_sync.side_effect = AgentRunError("Error")
+
+    code_reviewer = _get_code_reviewer(
+        reviewer_agent=reviewer_agent,
+        summarizing_agent=mock.Mock(),
+        context_retriever=context_retriever,
+    )
+
+    with pytest.raises(UnknownAIError):
         code_reviewer.review(
             target=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab)
         )

@@ -4,7 +4,7 @@ from lgtm_ai.ai.schemas import Review, ReviewGuide
 from lgtm_ai.base.schemas import PRUrl
 from lgtm_ai.git.parser import DiffFileMetadata, DiffResult, ModifiedLine
 from lgtm_ai.git_client.base import GitClient
-from lgtm_ai.git_client.schemas import ContextBranch, IssueContent, PRDiff, PRMetadata
+from lgtm_ai.git_client.schemas import ContextBranch, ExistingReviewComment, IssueContent, PRDiff, PRMetadata
 from pydantic import HttpUrl
 from pydantic_ai.usage import RunUsage
 
@@ -64,3 +64,9 @@ class MockGitClient(GitClient):
 
     def get_file_contents(self, pr_url: PRUrl, file_path: str, branch_name: ContextBranch) -> str | None:
         return f"contents-of-{file_path}-context"
+
+    def get_review_comments(self, pr_url: PRUrl) -> list[ExistingReviewComment]:
+        return self.existing_comments
+
+    def __init__(self, existing_comments: list[ExistingReviewComment] | None = None) -> None:
+        self.existing_comments = existing_comments or []

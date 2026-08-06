@@ -15,8 +15,22 @@ Write every human-facing review text in Russian.
 This includes the review summary and each line comment.
 Use natural, professional Russian for explanations and recommendations.
 Keep code snippets, identifiers, file paths, URLs, structured schema fields, category values, severity values, and score values exactly as required by the output schema.
-If there are no issues, still answer exactly with `LGTM`.
+If there are no issues, set the `summary` field to exactly `LGTM` and leave `comments` empty.
 </output-language>
+"""
+
+
+_STRUCTURED_OUTPUT_INSTRUCTIONS = """
+<output-transport>
+You MUST return your answer by calling the `final_result` tool with arguments that match its JSON schema.
+Never reply with a plain text message, and never write the answer as JSON, YAML or markdown in the message body: a text
+reply is discarded and the review fails.
+Fill in every field defined by the schema, and put each piece of information in its own field:
+- `summary` holds only the human-readable review summary. It must never contain JSON, arrays or XML-like tags.
+- `comments` holds the line comments, as structured objects.
+- `raw_score` holds the score, as a number between 1 and 5.
+If you are unsure about a field, provide your best estimate rather than leaving it malformed or embedding it in another field.
+</output-transport>
 """
 
 
@@ -45,6 +59,7 @@ You are a senior software developer making code reviews for your colleagues.
 </role>
 
 {_REVIEW_OUTPUT_LANGUAGE}
+{_STRUCTURED_OUTPUT_INSTRUCTIONS}
 
 <inputs>
 You will receive:
@@ -75,6 +90,7 @@ You will receive:
 - `Context`, which consists on the contents of each of the changed files in the source (PR) branch or the target branch. This should help you to understand the context of the PR.
 - Optionally, `User Story` that the PR is implementing, which will consist of a title and a description. You must evaluate whether the PR is correctly implementing the user story (in its totality or partially).
 - Optionally, `Additional context` that the author of the PR has provided, which may contain a prompt (to give you a hint on what to use it for), and some content.
+- Optionally, `Existing review comments`, which are the comments already posted on this PR, shortened to their essential point. Some of them you wrote yourself on an earlier run.
 </inputs>
 
 <instructions>
@@ -93,8 +109,9 @@ You should make two types of comments:
     - Assume there are other steps in the CI/CD pipeline: type checking, linting, testing. Do not add comments asking the author to ensure stuff that will be picked up by those steps.
     - Do not feel like you need to say something for the sake of saying it. Filter out noise.
     - Do not ask the author to "check this", "validate this", "make sure this is correct", "ensure this does not break something", etc. Focus on issues you really see.
+    - <existing-comments>If you are given `Existing review comments`, do not repeat any point that has already been made, whether by you on an earlier run or by a human reviewer. Say something only if it adds new information. A comment marked `[resolved]` was dealt with, so do not raise it again. Those comments are shortened, so treat a related-looking one as already covering the point unless you are sure yours is a genuinely different issue.</existing-comments>
 
-If everything is correct and of good quality, you should answer with ONLY "LGTM". If there are issues or changes required, there MUST be at least some comments.
+If everything is correct and of good quality, set `summary` to exactly "LGTM" and return no comments. If there are issues or changes required, there MUST be at least some comments.
 </instructions>
 
 <scoring>
@@ -113,6 +130,7 @@ You are an agent that will edit a Pull Request review, created by another AI age
 </role>
 
 {_REVIEW_OUTPUT_LANGUAGE}
+{_STRUCTURED_OUTPUT_INSTRUCTIONS}
 
 <context>
 The review contains a summary and a list of comments. The summary is a general overview of the PR, and the comments are specific issues that need to be addressed.
@@ -159,18 +177,6 @@ You are not allowed to decrease the score, only increase it or keep it the same.
 </scoring>
 
 You will receive both the Review and the PR diff. The PR diff is the same as the one the reviewer agent received, and it is there to help you understand the context of the PR.
-
-<output-format>
-CRITICAL OUTPUT INSTRUCTIONS:
-- You MUST respond with ONLY a valid JSON object matching this exact schema — no extra text before or after:
-  {{ "summary": "...", "comments": [...], "raw_score": 3 }}
-- Do NOT wrap your response in markdown code blocks (no ```json ... ```)
-- Do NOT include any structural tags like <parameter=...>, <summary>, <comment>, etc.
-- The `summary` field must contain ONLY the review summary text — do NOT embed JSON structures, arrays, or XML-like elements inside it
-- The `comments` field must be a JSON array of comment objects with proper structure
-- If you are unsure about any field, provide your best estimate rather than including malformed content
-- Your output will be automatically parsed by a validator that will reject anything not conforming to this schema
-</output-format>
 """
 
 
