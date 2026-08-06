@@ -498,6 +498,8 @@ class PublishMetadata(BaseModel):
     model_name: str
     usage: RunUsage
     config: dict[str, object] | None = None
+    warnings: tuple[str, ...] = ()
+    """Non-fatal problems hit while producing the review, surfaced to the reader so a degraded result is not mistaken for a complete one."""
 
     @cached_property
     def created_at(self) -> str:

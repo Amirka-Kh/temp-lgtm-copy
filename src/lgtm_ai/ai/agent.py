@@ -1,5 +1,6 @@
 import logging
-from typing import Any, TypeGuard, cast, get_args
+from collections.abc import Callable
+from typing import Any, Final, TypeGuard, cast, get_args
 
 from lgtm_ai.ai.exceptions import InvalidModelName, MissingAIAPIKey, MissingModelUrl
 from lgtm_ai.ai.prompts import GUIDE_SYSTEM_PROMPT, REVIEWER_SYSTEM_PROMPT, SUMMARIZING_SYSTEM_PROMPT
@@ -23,6 +24,14 @@ from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.mistral import LatestMistralModelNames, MistralModel
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.profiles import ModelProfile
+from pydantic_ai.profiles.deepseek import deepseek_model_profile
+from pydantic_ai.profiles.google import google_model_profile
+from pydantic_ai.profiles.harmony import harmony_model_profile
+from pydantic_ai.profiles.meta import meta_model_profile
+from pydantic_ai.profiles.mistral import mistral_model_profile
+from pydantic_ai.profiles.openai import OpenAIJsonSchemaTransformer, OpenAIModelProfile
+from pydantic_ai.profiles.qwen import qwen_model_profile
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.deepseek import DeepSeekProvider
 from pydantic_ai.providers.google import GoogleProvider
@@ -51,7 +60,11 @@ def get_ai_model(model_name: SupportedAIModels | str, api_key: str, model_url: s
 
     if model_url:
         logger.info("Using model '%s' via custom OpenAI-compatible endpoint: %s", model_name, model_url)
-        return OpenAIChatModel(model_name=model_name, provider=OpenAIProvider(api_key=api_key, base_url=model_url))
+        return OpenAIChatModel(
+            model_name=model_name,
+            provider=OpenAIProvider(api_key=api_key, base_url=model_url),
+            profile=custom_endpoint_model_profile(model_name),
+        )
 
     if model_name in SupportedAIModelsList and not api_key:
         raise MissingAIAPIKey(model_name=model_name)
@@ -75,6 +88,43 @@ def get_ai_model(model_name: SupportedAIModels | str, api_key: str, model_url: s
     else:
         # Not known models but no custom URL was provided, so we raise an error
         raise MissingModelUrl(model_name=model_name)
+
+
+_CUSTOM_ENDPOINT_MODEL_PROFILES: Final[dict[str, Callable[[str], ModelProfile | None]]] = {
+    "llama": meta_model_profile,
+    "gemma": google_model_profile,
+    "qwen": qwen_model_profile,
+    "qwq": qwen_model_profile,
+    "deepseek": deepseek_model_profile,
+    "mistral": mistral_model_profile,
+    "gpt-oss": harmony_model_profile,
+}
+"""Model families commonly self-hosted behind an OpenAI-compatible endpoint, and the profile that makes them work.
+
+`OpenAIProvider` always picks the plain OpenAI profile, which is wrong for these: Qwen, for instance, needs its JSON
+schema `$defs` inlined before a local server can turn the `final_result` tool schema into a decoding grammar.
+Mirrors what `OllamaProvider.model_profile` does for the same models.
+"""
+
+
+def custom_endpoint_model_profile(model_name: str) -> ModelProfile:
+    """Build the model profile to use for a model served from a custom OpenAI-compatible endpoint.
+
+    Starts from the OpenAI-compatible defaults (what `OpenAIProvider` would give us) and layers the known profile of
+    the model family on top, if we recognize one. Strict tool definitions are disabled because self-hosted servers
+    (llama.cpp, vLLM, Ollama, ...) generally do not implement them.
+    """
+    lowered = model_name.lower()
+    family_profile: ModelProfile | None = None
+    for prefix, profile_func in _CUSTOM_ENDPOINT_MODEL_PROFILES.items():
+        if lowered.startswith(prefix):
+            family_profile = profile_func(lowered)
+            logger.debug("Applying '%s' model profile to model '%s'", prefix, model_name)
+
+    return OpenAIModelProfile(
+        json_schema_transformer=OpenAIJsonSchemaTransformer,
+        openai_supports_strict_tool_definition=False,
+    ).update(family_profile)
 
 
 def get_reviewer_agent_with_settings(

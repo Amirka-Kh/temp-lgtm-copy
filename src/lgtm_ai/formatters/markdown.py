@@ -93,4 +93,5 @@ class MarkDownFormatter(Formatter[str]):
             created_at=metadata.created_at,
             usage=metadata.usage,
             config=metadata.config,
+            warnings=metadata.warnings,
         )

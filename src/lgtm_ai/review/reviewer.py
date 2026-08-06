@@ -1,4 +1,5 @@
 import logging
+from typing import Final
 
 from lgtm_ai.ai.schemas import (
     PublishMetadata,
@@ -14,6 +15,7 @@ from lgtm_ai.git_client.base import GitClient
 from lgtm_ai.git_client.schemas import PRDiff, PRMetadata
 from lgtm_ai.review.context import ContextRetriever
 from lgtm_ai.review.exceptions import (
+    BaseAIError,
     handle_ai_exceptions,
 )
 from lgtm_ai.review.prompt_generators import PromptGenerator
@@ -22,6 +24,11 @@ from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 logger = logging.getLogger("lgtm.ai")
+
+SUMMARIZING_FAILED_WARNING: Final = (
+    "The summarizing agent failed, so this is the unrefined initial review: "
+    "comments have not been filtered, merged or re-scored, and no code suggestions were added."
+)
 
 
 class CodeReviewer:
@@ -109,13 +116,21 @@ class CodeReviewer:
             total_usage=total_usage,
             usage_limits=usage_limits,
         )
-        final_review, final_usage = self._summarize_initial_review(
-            pr_diff,
-            initial_review_response=initial_review_response,
-            prompt_generator=prompt_generator,
-            total_usage=total_usage,
-            usage_limits=usage_limits,
-        )
+        warnings: tuple[str, ...] = ()
+        try:
+            final_review, final_usage = self._summarize_initial_review(
+                pr_diff,
+                initial_review_response=initial_review_response,
+                prompt_generator=prompt_generator,
+                total_usage=total_usage,
+                usage_limits=usage_limits,
+            )
+        except BaseAIError as err:
+            # The initial review is already complete and publishable, so a failing summarizing agent degrades the
+            # review instead of losing it entirely.
+            logger.warning("Summarizing agent failed (%s); falling back to the initial review", err)
+            final_review, final_usage = initial_review_response, total_usage
+            warnings = (SUMMARIZING_FAILED_WARNING,)
         logger.info("Final review completed")
         logger.debug(
             "Final review score: %d; Number of comments: %d", final_review.raw_score, len(final_review.comments)
@@ -125,7 +140,10 @@ class CodeReviewer:
             pr_diff=pr_diff,
             review_response=final_review,
             metadata=PublishMetadata(
-                model_name=self.model.model_name, usage=final_usage, config=self.config.model_dump()
+                model_name=self.model.model_name,
+                usage=final_usage,
+                config=self.config.model_dump(),
+                warnings=warnings,
             ),
         )
 

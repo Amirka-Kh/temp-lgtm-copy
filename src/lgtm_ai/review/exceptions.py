@@ -1,3 +1,4 @@
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http import HTTPStatus
@@ -11,6 +12,34 @@ from pydantic_ai.exceptions import (
     ModelHTTPError,
     UsageLimitExceeded,
 )
+
+_RETRIES_EXHAUSTED_PATTERN: Final = re.compile(r"Exceeded maximum (output )?retries", re.IGNORECASE)
+"""pydantic-ai raises `UnexpectedModelBehavior` with this message when the model never produced a usable structured output.
+
+It covers both the model answering with plain text instead of calling the output tool, and the model calling the
+output tool with arguments that do not validate against the response schema.
+"""
+
+
+def _is_caused_by_validation_error(error: BaseException | None, _seen: set[int] | None = None) -> bool:
+    """Check whether a `ValidationError` appears anywhere in the causal graph of `error`.
+
+    pydantic-ai runs agents inside a task group, so the original `ValidationError` is usually buried inside an
+    `ExceptionGroup` rather than being reachable through `__context__` alone. We therefore walk `__cause__`,
+    `__context__` and the members of any exception group, guarding against cycles.
+    """
+    seen = set() if _seen is None else _seen
+    if error is None or id(error) in seen:
+        return False
+    seen.add(id(error))
+
+    if isinstance(error, ValidationError):
+        return True
+
+    candidates: list[BaseException | None] = [error.__cause__, error.__context__]
+    if isinstance(error, BaseExceptionGroup):
+        candidates.extend(error.exceptions)
+    return any(_is_caused_by_validation_error(candidate, seen) for candidate in candidates)
 
 
 class BaseAIError[T: AgentRunError](LGTMException):
@@ -60,21 +89,20 @@ class UnknownAIError(BaseAIError[AgentRunError]):
 class InvalidAIResponseError(BaseAIError[UnexpectedModelBehavior]):
     def __init__(
         self,
-        message: str = "The AI model returned an invalid response. Try setting `ai_retries` to a higher value, or using a more powerful LLM.",
+        message: str = (
+            "The AI model returned an invalid response. Try setting `ai_retries` to a higher value, or using a more powerful LLM. "
+            "If you are running the model on a local or OpenAI-compatible server, make sure it supports tool calling: "
+            "lgtm asks the model to return its review through a `final_result` tool call, and a model that replies with plain "
+            "text instead will always fail here."
+        ),
     ) -> None:
         super().__init__(message)
 
     @classmethod
     def match(cls, error: UnexpectedModelBehavior) -> bool:
-        def _is_error_caused_by_validation_error(err: BaseException | None) -> bool:
-            ctx = err.__context__ if err else None
-            if ctx is None:
-                return False
-            if isinstance(ctx, ValidationError):
-                return True
-            return _is_error_caused_by_validation_error(ctx)
-
-        return _is_error_caused_by_validation_error(error.__context__)
+        if _RETRIES_EXHAUSTED_PATTERN.search(str(error)):
+            return True
+        return _is_caused_by_validation_error(error)
 
 
 class ModelNotFoundError(BaseAIError[ModelHTTPError]):

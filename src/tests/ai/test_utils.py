@@ -1,19 +1,22 @@
+import json
 from contextlib import nullcontext as does_not_raise
 from typing import Any
 
 import pytest
-from lgtm_ai.ai.agent import get_ai_model
+from lgtm_ai.ai.agent import custom_endpoint_model_profile, get_ai_model
 from lgtm_ai.ai.exceptions import (
     InvalidGeminiWildcard,
     InvalidModelWildCard,
     MissingAIAPIKey,
     MissingModelUrl,
 )
-from lgtm_ai.ai.schemas import SupportedGeminiModel
+from lgtm_ai.ai.schemas import ReviewResponse, SupportedGeminiModel
 from lgtm_ai.ai.utils import select_latest_gemini_model
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.profiles import InlineDefsJsonSchemaTransformer, JsonSchemaTransformer
+from pydantic_ai.profiles.openai import OpenAIJsonSchemaTransformer
 
 
 @pytest.mark.parametrize(
@@ -37,6 +40,40 @@ def test_get_ai_model(model: str, model_url: str | None, ai_api_key: str, expect
         ai_model = get_ai_model(model, ai_api_key, model_url=model_url)
         assert isinstance(ai_model, expected_type)
         assert ai_model.model_name == model
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_transformer"),
+    [
+        ("qwen3.6-flash", InlineDefsJsonSchemaTransformer),
+        ("Qwen3-Coder-30B", InlineDefsJsonSchemaTransformer),
+        ("qwq-32b", InlineDefsJsonSchemaTransformer),
+        ("llama3.1", InlineDefsJsonSchemaTransformer),
+        # Anything we don't recognize keeps the plain OpenAI-compatible behavior
+        ("gpt-4o", OpenAIJsonSchemaTransformer),
+        ("some-random-model", OpenAIJsonSchemaTransformer),
+    ],
+)
+def test_custom_endpoint_model_profile_matches_the_model_family(
+    model: str, expected_transformer: type[JsonSchemaTransformer]
+) -> None:
+    """Self-hosted models need their family profile; `OpenAIProvider` would give them the plain OpenAI one."""
+    profile = custom_endpoint_model_profile(model)
+
+    assert profile.json_schema_transformer is expected_transformer
+    assert profile.openai_supports_strict_tool_definition is False
+
+
+def test_qwen_output_tool_schema_has_no_json_schema_refs() -> None:
+    """Local servers build a decoding grammar out of the tool schema, which `$ref`/`$defs` can trip up."""
+    model = get_ai_model("qwen3.6-flash", "fake_api_key", model_url="http://localhost:1234")
+    transformer = model.profile.json_schema_transformer
+    assert transformer is not None
+
+    schema = transformer(ReviewResponse.model_json_schema()).walk()
+
+    assert "$defs" not in json.dumps(schema)
+    assert "$ref" not in json.dumps(schema)
 
 
 @pytest.mark.parametrize(

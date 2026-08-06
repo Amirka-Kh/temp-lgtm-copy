@@ -379,6 +379,16 @@ lgtm review \
   https://github.com/group/repo/pull/1
 ```
 
+> [!IMPORTANT]
+> The model **must support tool calling**. lgtm asks it to return the review by calling a `final_result` tool whose
+> arguments follow the review schema; a model that answers with plain text (or with the JSON inlined in the message
+> body) never produces a usable review, and the run fails with `The AI model returned an invalid response`.
+
+lgtm recognizes the common self-hosted model families from the name passed to `--model` (`qwen*`, `llama*`, `gemma*`,
+`mistral*`, `deepseek*`, `qwq*`, `gpt-oss*`) and applies the matching pydantic-ai model profile, which adjusts the JSON
+schema lgtm sends to what these models handle well. Naming the model after its family (e.g. `qwen3.6-flash` rather than
+`my-model`) therefore gives better results.
+
 ### CI/CD Integration
 
 lgtm is meant to be integrated into your CI/CD pipeline, so that PR authors can choose to request reviews by running the necessary pipeline step.

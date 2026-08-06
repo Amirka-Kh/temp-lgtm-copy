@@ -20,6 +20,7 @@ from lgtm_ai.review.exceptions import (
     ServerUsageLimitsExceededError,
     UnknownAIError,
 )
+from lgtm_ai.review.reviewer import SUMMARIZING_FAILED_WARNING
 from pydantic import ValidationError
 from pydantic_ai import (
     AgentRunError,
@@ -47,6 +48,16 @@ def _get_ai_validation_error(*, is_validation_error: bool) -> UnexpectedModelBeh
     exc_lvl2.__context__ = exc_lvl3
     exc.__context__ = exc_lvl2
 
+    return exc
+
+
+def _get_task_group_wrapped_validation_error() -> UnexpectedModelBehavior:
+    """Build the error shape pydantic-ai actually produces: the cause is buried inside an `ExceptionGroup`.
+
+    Agents run inside a task group, so the `ValidationError` is never reachable by following `__context__` alone.
+    """
+    exc = UnexpectedModelBehavior("Error")
+    exc.__context__ = ExceptionGroup("unhandled errors in a TaskGroup", [ValidationError("Invalid", [])])
     return exc
 
 
@@ -277,7 +288,7 @@ def test_summarizing_message_in_review(context_retriever: ContextRetriever) -> N
     test_summarizing_agent = get_summarizing_agent_with_settings()
     test_agent.run_sync.return_value = mock.Mock(
         output=ReviewResponse(summary="a", raw_score=1),
-        usage=lambda: RunUsage(requests=1, input_tokens=1041, output_tokens=6),
+        usage=RunUsage(requests=1, input_tokens=1041, output_tokens=6),
     )
 
     with (
@@ -298,28 +309,25 @@ def test_summarizing_message_in_review(context_retriever: ContextRetriever) -> N
             target=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab)
         )
 
-    expected_review_json = json.dumps(
-        {"summary": "a", "comments": [], "raw_score": 1}, indent=2
+    # The review is embedded verbatim, so it is dumped the same way the prompt generator dumps it.
+    expected_review_json = ReviewResponse(summary="a", raw_score=1).model_dump_json(indent=2)
+    expected_message = "\n".join(
+        [
+            "PR METADATA:",
+            "- Title: feat(#288): a title",
+            "- Description: bar",
+            "",
+            "PR DIFF:",
+            "```",
+            json.dumps([diff.model_dump() for diff in MOCK_DIFF]),
+            "```",
+            "",
+            "REVIEW:",
+            "```",
+            expected_review_json,
+            "```",
+        ]
     )
-    expected_message = textwrap.dedent(
-        f"""
-        PR METADATA:
-        - Title: feat(#288): a title
-        - Description: bar
-
-        PR DIFF:
-        ```
-        {json.dumps([diff.model_dump() for diff in MOCK_DIFF])}
-        ```
-
-        REVIEW:
-        ```
-        {expected_review_json}
-        ```
-
-
-        """
-    ).strip()
     _assert_agent_message(
         messages,
         expected_message,
@@ -464,6 +472,10 @@ def test_file_is_excluded_from_prompt(context_retriever: ContextRetriever) -> No
         (ModelHTTPError(312, "Error"), UnknownAIError),
         (_get_ai_validation_error(is_validation_error=True), InvalidAIResponseError),
         (_get_ai_validation_error(is_validation_error=False), UnknownAIError),
+        (_get_task_group_wrapped_validation_error(), InvalidAIResponseError),
+        # The model never produced a usable structured output (e.g. it answered with plain text instead of calling
+        # the output tool), which is what a model without proper tool-calling support does.
+        (UnexpectedModelBehavior("Exceeded maximum output retries (1)"), InvalidAIResponseError),
         (UsageLimitExceeded("Error"), ClientUsageLimitsExceededError),
     ],
 )
@@ -485,6 +497,96 @@ def test_errors_are_handled_on_reviewer_agent(raised_error: Exception, expected_
     )
 
     with pytest.raises(expected_error):
+        code_reviewer.review(
+            target=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab)
+        )
+
+
+def _get_code_reviewer(
+    *,
+    reviewer_agent: mock.Mock,
+    summarizing_agent: mock.Mock,
+    context_retriever: ContextRetriever,
+) -> CodeReviewer:
+    return CodeReviewer(
+        reviewer_agent=reviewer_agent,
+        summarizing_agent=summarizing_agent,
+        model=mock.Mock(spec=OpenAIChatModel, model_name=DEFAULT_AI_MODEL),
+        git_client=MockGitClient(),
+        context_retriever=context_retriever,
+        config=ResolvedConfig(ai_api_key="", git_api_key=""),
+    )
+
+
+@pytest.mark.parametrize(
+    "raised_error",
+    [
+        UnexpectedModelBehavior("Exceeded maximum output retries (1)"),
+        ModelHTTPError(500, "Error"),
+        UsageLimitExceeded("Error"),
+        AgentRunError("Error"),
+    ],
+)
+def test_initial_review_is_published_when_summarizing_agent_fails(
+    context_retriever: ContextRetriever, raised_error: Exception
+) -> None:
+    """A failing summarizing agent degrades the review to the initial one instead of losing it."""
+    initial_review = ReviewResponse(summary="initial summary", raw_score=2)
+    reviewer_agent = mock.Mock()
+    reviewer_agent.run_sync.return_value = mock.Mock(
+        output=initial_review, usage=RunUsage(requests=1, input_tokens=10, output_tokens=5)
+    )
+    summarizing_agent = mock.Mock()
+    summarizing_agent.run_sync.side_effect = raised_error
+
+    code_reviewer = _get_code_reviewer(
+        reviewer_agent=reviewer_agent,
+        summarizing_agent=summarizing_agent,
+        context_retriever=context_retriever,
+    )
+    review = code_reviewer.review(
+        target=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab)
+    )
+
+    assert review.review_response == initial_review
+    assert review.metadata.warnings == (SUMMARIZING_FAILED_WARNING,)
+
+
+def test_no_warning_is_added_when_summarizing_agent_succeeds(context_retriever: ContextRetriever) -> None:
+    reviewer_agent = mock.Mock()
+    reviewer_agent.run_sync.return_value = mock.Mock(
+        output=ReviewResponse(summary="initial summary", raw_score=2), usage=RunUsage()
+    )
+    summarizing_agent = mock.Mock()
+    summarizing_agent.run_sync.return_value = mock.Mock(
+        output=ReviewResponse(summary="final summary", raw_score=4), usage=RunUsage()
+    )
+
+    code_reviewer = _get_code_reviewer(
+        reviewer_agent=reviewer_agent,
+        summarizing_agent=summarizing_agent,
+        context_retriever=context_retriever,
+    )
+    review = code_reviewer.review(
+        target=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab)
+    )
+
+    assert review.review_response.summary == "final summary"
+    assert review.metadata.warnings == ()
+
+
+def test_failing_reviewer_agent_still_raises(context_retriever: ContextRetriever) -> None:
+    """There is nothing to fall back to when the *initial* review is what failed."""
+    reviewer_agent = mock.Mock()
+    reviewer_agent.run_sync.side_effect = AgentRunError("Error")
+
+    code_reviewer = _get_code_reviewer(
+        reviewer_agent=reviewer_agent,
+        summarizing_agent=mock.Mock(),
+        context_retriever=context_retriever,
+    )
+
+    with pytest.raises(UnknownAIError):
         code_reviewer.review(
             target=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab)
         )
