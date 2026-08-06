@@ -105,6 +105,12 @@ def _common_options[**P, T](func: Callable[P, T]) -> Callable[P, T]:
         type=IntOrNoLimitType(),
         help=f"Maximum number of input tokens allowed to send to all AI models in total (defaults to {DEFAULT_INPUT_TOKEN_LIMIT:,}). Pass 'no-limit' to disable the limit.",
     )
+    @click.option(
+        "--ai-context-window",
+        type=int,
+        help="Context window (in tokens) of the AI model. If not given, it is inferred from the model name. "
+        "Prompts larger than this are automatically split into several smaller reviews.",
+    )
     @click.option("--verbose", "-v", count=True, help="Set logging level.")
     @functools.wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:

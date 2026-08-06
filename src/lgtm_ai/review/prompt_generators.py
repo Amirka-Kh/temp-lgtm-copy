@@ -1,4 +1,3 @@
-import json
 import logging
 import pathlib
 from typing import ClassVar
@@ -8,7 +7,9 @@ from lgtm_ai.ai.schemas import AdditionalContext, ReviewResponse
 from lgtm_ai.base.exceptions import NothingToReviewError
 from lgtm_ai.base.utils import file_matches_any_pattern
 from lgtm_ai.config.handler import ResolvedConfig
+from lgtm_ai.git.parser import DiffResult
 from lgtm_ai.git_client.schemas import IssueContent, PRDiff, PRMetadata
+from lgtm_ai.review.chunking import serialize_diffs
 from lgtm_ai.review.schemas import PRCodeContext, PRContextFileContents
 
 logger = logging.getLogger("lgtm.ai")
@@ -34,31 +35,56 @@ class PromptGenerator:
         context: PRCodeContext,
         additional_context: list[AdditionalContext] | None = None,
         issue_context: IssueContent | None = None,
+        diff_payload: str | None = None,
     ) -> str:
         """Generate the initial prompt for the AI model to review the PR.
 
         It includes the diff and the context of the PR, formatted for the AI to receive.
+
+        `diff_payload` can be given to review only a part of the PR (see `chunking`), in which
+        case it replaces the serialized diff of the whole PR.
         """
         template = self._template_env.get_template(self.REVIEW_TEMPLATE)
         return template.render(
             metadata=self.pr_metadata,
-            diff=self._serialize_pr_diff(pr_diff),
+            diff=diff_payload if diff_payload is not None else self._serialize_pr_diff(pr_diff),
             context=self._filter_context_based_on_exclusions(context.file_contents),
             issue_context=issue_context,
             additional_context=additional_context,
         )
 
-    def generate_summarizing_prompt(self, *, pr_diff: PRDiff, raw_review: ReviewResponse) -> str:
+    def generate_summarizing_prompt(
+        self, *, pr_diff: PRDiff, raw_review: ReviewResponse, diff_payload: str | None = None
+    ) -> str:
         """Generate a prompt for the AI model to summarize the review.
 
         It includes the diff and the review, formatted for the AI to receive.
+
+        `diff_payload` can be given to replace the serialized diff of the whole PR, which is
+        needed when the diff does not fit in the context window of the model.
         """
         template = self._template_env.get_template(self.SUMMARIZING_TEMPLATE)
         return template.render(
             metadata=self.pr_metadata,
-            diff=self._serialize_pr_diff(pr_diff),
+            diff=diff_payload if diff_payload is not None else self._serialize_pr_diff(pr_diff),
             review=raw_review.model_dump_json(indent=2),
         )
+
+    def get_reviewable_diffs(self, pr_diff: PRDiff) -> list[DiffResult]:
+        """Return the file diffs of the PR that are actually going to be reviewed.
+
+        It excludes files according to the `exclude` patterns in the config.
+        """
+        keep = []
+        for diff in pr_diff.diff:
+            if not file_matches_any_pattern(diff.metadata.new_path, self.config.exclude):
+                keep.append(diff)
+            else:
+                logger.debug("Excluding file %s from diff", diff.metadata.new_path)
+
+        if not keep:
+            raise NothingToReviewError(exclude=self.config.exclude)
+        return keep
 
     def generate_guide_prompt(
         self, *, pr_diff: PRDiff, context: PRCodeContext, additional_context: list[AdditionalContext] | None = None
@@ -80,13 +106,4 @@ class PromptGenerator:
 
         It excludes files according to the `exclude` patterns in the config.
         """
-        keep = []
-        for diff in pr_diff.diff:
-            if not file_matches_any_pattern(diff.metadata.new_path, self.config.exclude):
-                keep.append(diff.model_dump())
-            else:
-                logger.debug("Excluding file %s from diff", diff.metadata.new_path)
-
-        if not keep:
-            raise NothingToReviewError(exclude=self.config.exclude)
-        return json.dumps(keep)
+        return serialize_diffs(self.get_reviewable_diffs(pr_diff))

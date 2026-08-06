@@ -54,6 +54,7 @@ class CliOptions(BaseModel):
     silent: bool | None = None
     ai_retries: int | None = None
     ai_input_tokens_limit: IntOrNoLimit | None = None
+    ai_context_window: int | None = None
     issues_url: str | None = None
     issues_regex: str | None = None
     issues_platform: IssuesPlatform | None = None
@@ -117,6 +118,9 @@ class ResolvedConfig(
         DEFAULT_INPUT_TOKEN_LIMIT
     )
     """Maximum number of input tokens allowed to send to all AI models in total."""
+
+    ai_context_window: int | None = None
+    """Context window (in tokens) of the AI model. If not set, it is inferred from the model name."""
 
     issues_url: HttpUrl | None = None
     """The URL of the issues page to retrieve additional context from."""
