@@ -15,6 +15,7 @@ from lgtm_ai.review import CodeReviewer
 from lgtm_ai.review.context import ContextRetriever
 from lgtm_ai.review.exceptions import (
     ClientUsageLimitsExceededError,
+    ContextWindowExceededError,
     InvalidAIResponseError,
     ServerError,
     ServerUsageLimitsExceededError,
@@ -39,6 +40,19 @@ from tests.review.utils import MOCK_DIFF, MockGitClient
 # This is a safety measure to make sure we don't accidentally make real requests to the LLM while testing,
 # see ALLOW_MODEL_REQUESTS for more details.
 models.ALLOW_MODEL_REQUESTS = False
+
+
+LITELLM_CONTEXT_WINDOW_BODY = {
+    "message": (
+        "litellm.ContextWindowExceededError: litellm.BadRequestError: ContextWindowExceededError: "
+        "Custom_openaiException - request (101408 tokens) exceeds the available context size (65536 tokens), "
+        "try increasing it\nmodel=Qwen3.6-Flash."
+    ),
+    "type": None,
+    "param": None,
+    "code": "400",
+}
+"""Verbatim body of a real failure against a self-hosted Qwen behind litellm."""
 
 
 def _get_ai_validation_error(*, is_validation_error: bool) -> UnexpectedModelBehavior:
@@ -473,6 +487,19 @@ def test_file_is_excluded_from_prompt(context_retriever: ContextRetriever) -> No
         (_get_ai_validation_error(is_validation_error=True), InvalidAIResponseError),
         (_get_ai_validation_error(is_validation_error=False), UnknownAIError),
         (_get_task_group_wrapped_validation_error(), InvalidAIResponseError),
+        # Context-window overflow has no status code of its own, so the body is the only signal. It must not be
+        # confused with a rate limit, which shares the 413.
+        (ModelHTTPError(400, "m", body=LITELLM_CONTEXT_WINDOW_BODY), ContextWindowExceededError),
+        (
+            ModelHTTPError(400, "m", body={"error": {"message": "This model's maximum context length is 8192 tokens"}}),
+            ContextWindowExceededError,
+        ),
+        (
+            ModelHTTPError(413, "m", body={"error": {"message": "prompt is too long: 250000 tokens > 200000 maximum"}}),
+            ContextWindowExceededError,
+        ),
+        (ModelHTTPError(413, "m", body={"error": {"message": "Request too large"}}), ServerUsageLimitsExceededError),
+        (ModelHTTPError(400, "m", body={"error": {"message": "Invalid tool schema"}}), UnknownAIError),
         # The model never produced a usable structured output (e.g. it answered with plain text instead of calling
         # the output tool), which is what a model without proper tool-calling support does.
         (UnexpectedModelBehavior("Exceeded maximum output retries (1)"), InvalidAIResponseError),

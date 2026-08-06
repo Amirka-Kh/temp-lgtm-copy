@@ -13,6 +13,16 @@ from pydantic_ai.exceptions import (
     UsageLimitExceeded,
 )
 
+_CONTEXT_WINDOW_PATTERN: Final = re.compile(
+    r"context[ _]?(window|length|size)|contextwindowexceeded|prompt is too long|too many tokens",
+    re.IGNORECASE,
+)
+"""Wordings providers use when the prompt does not fit the model's context window.
+
+There is no status code for this — litellm and vLLM answer 400, OpenAI answers 400 with `context_length_exceeded`,
+and Anthropic answers 413 — so the body is the only reliable signal.
+"""
+
 _RETRIES_EXHAUSTED_PATTERN: Final = re.compile(r"Exceeded maximum (output )?retries", re.IGNORECASE)
 """pydantic-ai raises `UnexpectedModelBehavior` with this message when the model never produced a usable structured output.
 
@@ -72,6 +82,25 @@ class ClientUsageLimitsExceededError(BaseAIError[UsageLimitExceeded]):
         return True  # There is only one type of UsageLimitExceeded error, so we always match it.
 
 
+class ContextWindowExceededError(BaseAIError[ModelHTTPError]):
+    def __init__(
+        self,
+        message: str = (
+            "The review prompt is larger than the model's context window. "
+            "Exclude more files with `exclude`, review a smaller PR, or use a model with a bigger context window. "
+            "Note that `ai_input_tokens_limit` does not prevent this: it only counts tokens already spent earlier in "
+            "the run, so it cannot catch a first request that is too large on its own."
+        ),
+    ) -> None:
+        super().__init__(message)
+
+    @classmethod
+    def match(cls, error: ModelHTTPError) -> bool:
+        if error.status_code not in {HTTPStatus.BAD_REQUEST, HTTPStatus.REQUEST_ENTITY_TOO_LARGE}:
+            return False
+        return bool(_CONTEXT_WINDOW_PATTERN.search(str(error.body)))
+
+
 class ServerError(BaseAIError[ModelHTTPError]):
     def __init__(self, message: str = "The AI model server is currently unavailable.") -> None:
         super().__init__(message)
@@ -117,6 +146,9 @@ class ModelNotFoundError(BaseAIError[ModelHTTPError]):
 
 
 MAPPED_HTTP_ERRORS: Final[tuple[type[BaseAIError[ModelHTTPError]], ...]] = (
+    # Checked before ServerUsageLimitsExceededError: both can be a 413, but a context-window overflow needs a
+    # different fix from a rate limit, so the more specific match has to win.
+    ContextWindowExceededError,
     ServerUsageLimitsExceededError,
     ServerError,
     ModelNotFoundError,
