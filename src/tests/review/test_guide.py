@@ -17,6 +17,7 @@ from lgtm_ai.git_client.schemas import PRDiff
 from lgtm_ai.review.guide import ReviewGuideGenerator
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.usage import RunUsage
 from tests.review.utils import MOCK_DIFF, MockGitClient
 
 
@@ -56,3 +57,30 @@ def test_get_guide_from_url_valid() -> None:
             config=config.model_dump(),
         ),
     )
+
+
+def test_guide_drops_code_context_when_the_pr_does_not_fit() -> None:
+    guide_agent = mock.Mock()
+    guide_agent.run_sync.return_value = mock.Mock(
+        output=GuideResponse(
+            summary="a",
+            key_changes=[GuideKeyChange(file_name="a", description="a")],
+            checklist=[GuideChecklistItem(description="a")],
+            references=[GuideReference(title="a", url="a")],
+        ),
+        usage=RunUsage(requests=1, input_tokens=10, output_tokens=1),
+    )
+
+    guide_generator = ReviewGuideGenerator(
+        guide_agent=guide_agent,
+        model=mock.Mock(spec=OpenAIChatModel, model_name="gemini-2.5-flash"),
+        git_client=MockGitClient(file_contents_size=50_000),
+        config=ResolvedConfig(ai_api_key="", git_api_key="", ai_context_window=4_000),
+    )
+    guide = guide_generator.generate_review_guide(
+        pr_url=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab)
+    )
+
+    assert guide
+    prompt = guide_agent.run_sync.call_args.kwargs["user_prompt"]
+    assert "CONTEXT:" not in prompt

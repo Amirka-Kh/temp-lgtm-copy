@@ -1,9 +1,13 @@
 import logging
+from typing import Final, cast
 
+from lgtm_ai.ai.context_window import estimate_tokens, get_prompt_budget
 from lgtm_ai.ai.schemas import (
+    AdditionalContext,
     PublishMetadata,
     Review,
     ReviewerDeps,
+    ReviewRawScore,
     ReviewResponse,
     SummarizingDeps,
 )
@@ -11,17 +15,28 @@ from lgtm_ai.base.schemas import LocalRepository, PRUrl
 from lgtm_ai.config.handler import ResolvedConfig
 from lgtm_ai.git.repository import get_diff_from_local_repo
 from lgtm_ai.git_client.base import GitClient
-from lgtm_ai.git_client.schemas import PRDiff, PRMetadata
+from lgtm_ai.git_client.schemas import IssueContent, PRDiff, PRMetadata
+from lgtm_ai.review.chunking import chunk_diffs, render_diff_payload
 from lgtm_ai.review.context import ContextRetriever
 from lgtm_ai.review.exceptions import (
+    ClientUsageLimitsExceededError,
     handle_ai_exceptions,
 )
 from lgtm_ai.review.prompt_generators import PromptGenerator
+from lgtm_ai.review.schemas import PRCodeContext
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 logger = logging.getLogger("lgtm.ai")
+
+MIN_DIFF_BUDGET: Final = 1_000
+"""Minimum number of tokens we reserve for the diff of a chunk, no matter how big the rest of the prompt is."""
+
+OMITTED_DIFF_NOTICE: Final = (
+    "NOTE: The diff of this PR is too large to fit in the context window of the model, so it is not "
+    "included here. Rely on the contents of the review below."
+)
 
 
 class CodeReviewer:
@@ -155,13 +170,124 @@ class CodeReviewer:
         else:
             issue_context = None
 
+        budget = self._get_prompt_budget()
         review_prompt = prompt_generator.generate_review_prompt(
             pr_diff=pr_diff,
             context=context,
             additional_context=additional_context,
             issue_context=issue_context,
         )
+
+        if estimate_tokens(review_prompt) > budget:
+            # The contents of the changed files are the biggest and the most redundant part of the
+            # prompt (the diff already contains the changes), so we drop them first.
+            logger.warning(
+                "The review prompt (~%d tokens) does not fit in the context window of %s (budget is %d tokens); "
+                "reviewing without the contents of the changed files",
+                estimate_tokens(review_prompt),
+                self.model.model_name,
+                budget,
+            )
+            context = PRCodeContext(file_contents=[])
+            review_prompt = prompt_generator.generate_review_prompt(
+                pr_diff=pr_diff,
+                context=context,
+                additional_context=additional_context,
+                issue_context=issue_context,
+            )
+
+        if estimate_tokens(review_prompt) > budget:
+            return self._perform_chunked_review(
+                pr_diff=pr_diff,
+                prompt_generator=prompt_generator,
+                additional_context=additional_context,
+                issue_context=issue_context,
+                budget=budget,
+                total_usage=total_usage,
+                usage_limits=usage_limits,
+            )
+
         logger.info("Reviewer Agent is performing the initial review")
+        return self._run_reviewer_agent(review_prompt, total_usage=total_usage, usage_limits=usage_limits)
+
+    def _perform_chunked_review(
+        self,
+        *,
+        pr_diff: PRDiff,
+        prompt_generator: PromptGenerator,
+        additional_context: list[AdditionalContext] | None,
+        issue_context: IssueContent | None,
+        budget: int,
+        total_usage: RunUsage,
+        usage_limits: UsageLimits,
+    ) -> ReviewResponse:
+        """Review a PR that is too large for the context window of the model in several parts.
+
+        The diff is split in as many parts as needed, each one is reviewed on its own, and the
+        resulting reviews are merged into a single one. It is worse than reviewing everything at
+        once (the model sees only a part of the PR at a time), but it is much better than not
+        reviewing the PR at all.
+        """
+        empty_context = PRCodeContext(file_contents=[])
+        overhead = estimate_tokens(
+            prompt_generator.generate_review_prompt(
+                pr_diff=pr_diff,
+                context=empty_context,
+                additional_context=additional_context,
+                issue_context=issue_context,
+                diff_payload="",
+            )
+        )
+        if budget - overhead < MIN_DIFF_BUDGET:
+            # Whatever is left in the prompt besides the diff is already too big; drop it as well.
+            logger.warning("The additional context of the PR does not fit in the context window either; dropping it")
+            additional_context, issue_context = None, None
+            overhead = estimate_tokens(
+                prompt_generator.generate_review_prompt(
+                    pr_diff=pr_diff, context=empty_context, additional_context=None, diff_payload=""
+                )
+            )
+
+        diff_budget = max(budget - overhead, MIN_DIFF_BUDGET)
+        chunks = chunk_diffs(prompt_generator.get_reviewable_diffs(pr_diff), budget_tokens=diff_budget)
+        logger.warning(
+            "The PR is too large to be reviewed in one go; splitting its diff in %d parts of at most %d tokens each",
+            len(chunks),
+            diff_budget,
+        )
+
+        responses: list[ReviewResponse] = []
+        for part, chunk in enumerate(chunks, start=1):
+            logger.info("Reviewer Agent is reviewing part %d out of %d", part, len(chunks))
+            chunk_prompt = prompt_generator.generate_review_prompt(
+                pr_diff=pr_diff,
+                context=empty_context,
+                additional_context=additional_context,
+                issue_context=issue_context,
+                diff_payload=render_diff_payload(chunk, part=part, total_parts=len(chunks)),
+            )
+            try:
+                responses.append(
+                    self._run_reviewer_agent(chunk_prompt, total_usage=total_usage, usage_limits=usage_limits)
+                )
+            except ClientUsageLimitsExceededError:
+                if not responses:
+                    raise
+                # Publishing a partial review is better than failing after having reviewed most of the PR.
+                logger.warning(
+                    "Usage limits reached after reviewing %d out of %d parts of the PR; "
+                    "the review will only cover those parts. Increase `ai_input_tokens_limit` to review it all",
+                    part - 1,
+                    len(chunks),
+                )
+                break
+
+        return _merge_review_responses(responses)
+
+    def _run_reviewer_agent(
+        self, review_prompt: str, *, total_usage: RunUsage, usage_limits: UsageLimits
+    ) -> ReviewResponse:
+        """Run the reviewer agent on the given prompt and return its review."""
         with handle_ai_exceptions():
             raw_res = self.reviewer_agent.run_sync(
                 model=self.model,
@@ -183,6 +309,14 @@ class CodeReviewer:
         )
         return raw_res.output
 
+    def _get_prompt_budget(self) -> int:
+        """Return the maximum size (in tokens) a prompt sent to the model can have."""
+        return get_prompt_budget(
+            self.model.model_name,
+            configured_context_window=self.config.ai_context_window,
+            input_tokens_limit=self.config.ai_input_tokens_limit,
+        )
+
     def _summarize_initial_review(
         self,
         pr_diff: PRDiff,
@@ -194,9 +328,25 @@ class CodeReviewer:
     ) -> tuple[ReviewResponse, RunUsage]:
         """Summarize the initial review with the summarizing agent."""
         logger.info("Summarizing Agent is refining the initial review")
+        budget = self._get_prompt_budget()
         summary_prompt = prompt_generator.generate_summarizing_prompt(
             pr_diff=pr_diff, raw_review=initial_review_response
         )
+        if estimate_tokens(summary_prompt) > budget:
+            logger.warning(
+                "The summarizing prompt does not fit in the context window of %s; summarizing without the diff",
+                self.model.model_name,
+            )
+            summary_prompt = prompt_generator.generate_summarizing_prompt(
+                pr_diff=pr_diff, raw_review=initial_review_response, diff_payload=OMITTED_DIFF_NOTICE
+            )
+        if estimate_tokens(summary_prompt) > budget:
+            logger.warning(
+                "The review itself does not fit in the context window of %s; skipping the summarizing step",
+                self.model.model_name,
+            )
+            return initial_review_response, total_usage
+
         with handle_ai_exceptions():
             final_res = self.summarizing_agent.run_sync(
                 model=self.model,
@@ -208,6 +358,23 @@ class CodeReviewer:
         usage = final_res.usage
         # _log_review_output_state("final", final_res.output)
         return final_res.output, usage
+
+
+def _merge_review_responses(responses: list[ReviewResponse]) -> ReviewResponse:
+    """Merge the reviews of the several parts of a chunked review into a single one.
+
+    All comments are kept, the summaries are concatenated, and the score of the whole PR is the
+    worst score any of its parts got.
+    """
+    if len(responses) == 1:
+        return responses[0]
+
+    summaries = [response.summary.strip() for response in responses if response.summary.strip()]
+    return ReviewResponse(
+        summary="\n\n".join(summaries),
+        comments=[comment for response in responses for comment in response.comments],
+        raw_score=cast(ReviewRawScore, min(int(response.raw_score) for response in responses)),
+    )
 
 
 def _log_review_output_state(stage: str, review: ReviewResponse) -> None:

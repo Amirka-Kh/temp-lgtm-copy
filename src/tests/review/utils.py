@@ -41,11 +41,25 @@ MOCK_DIFF = [
 
 
 class MockGitClient(GitClient):
+    def __init__(self, diff: list[DiffResult] | None = None, file_contents_size: int = 0) -> None:
+        """Mock git client.
+
+        Args:
+            diff: diff to return for any PR (defaults to `MOCK_DIFF`).
+            file_contents_size: if given, the contents of every file are padded to that many
+                characters, which is useful to test PRs that do not fit in the context window.
+        """
+        self.diff = diff if diff is not None else MOCK_DIFF
+        self.changed_files = (
+            ["file-1.txt", "file-2.txt"] if diff is None else [file_diff.metadata.new_path for file_diff in diff]
+        )
+        self.file_contents_size = file_contents_size
+
     def get_diff_from_url(self, pr_url: PRUrl) -> PRDiff:
         return PRDiff(
             id=1,
-            diff=MOCK_DIFF,
-            changed_files=["file-1.txt", "file-2.txt"],
+            diff=self.diff,
+            changed_files=self.changed_files,
             target_branch="main",
             source_branch="feature",
         )
@@ -63,4 +77,5 @@ class MockGitClient(GitClient):
         return IssueContent(title="Issue title", description="Issue description")
 
     def get_file_contents(self, pr_url: PRUrl, file_path: str, branch_name: ContextBranch) -> str | None:
-        return f"contents-of-{file_path}-context"
+        contents = f"contents-of-{file_path}-context"
+        return contents.ljust(self.file_contents_size, "x")
