@@ -26,7 +26,7 @@ from lgtm_ai.git_client.exceptions import (
     PullRequestDiffNotFoundError,
     PullRequestMetadataError,
 )
-from lgtm_ai.git_client.schemas import ContextBranch, IssueContent, PRDiff, PRMetadata
+from lgtm_ai.git_client.schemas import ContextBranch, ExistingReviewComment, IssueContent, PRDiff, PRMetadata
 from pydantic import HttpUrl
 
 logger = logging.getLogger("lgtm.git")
@@ -86,6 +86,37 @@ class GitlabClient(GitClient):
             title=issue.title or "",
             description=issue.description or "",
         )
+
+    def get_review_comments(self, pr_url: PRUrl) -> list[ExistingReviewComment]:
+        """Fetch the notes already posted on the MR, oldest first.
+
+        Discussions are used rather than plain notes so that the file/line a comment is anchored to, and whether its
+        thread was resolved, are available.
+        """
+        logger.info("Fetching existing comments from GitLab")
+        comments: list[ExistingReviewComment] = []
+        try:
+            pr = _get_pr_from_url(self.client, pr_url)
+            discussions = pr.discussions.list(all=True)
+        except gitlab.exceptions.GitlabError as err:
+            logger.warning("Failed to retrieve existing comments from GitLab, continuing without them: %s", err)
+            return []
+
+        for discussion in discussions:
+            for note in discussion.attributes.get("notes") or []:
+                if note.get("system"):
+                    continue  # Skip system notes ("merged", "changed target branch", ...)
+                position = note.get("position") or {}
+                comments.append(
+                    ExistingReviewComment(
+                        body=note.get("body") or "",
+                        author=note["author"]["name"] if note.get("author") else "unknown",
+                        file_path=position.get("new_path") or position.get("old_path"),
+                        line_number=position.get("new_line") or position.get("old_line"),
+                        is_resolved=bool(note.get("resolved")),
+                    )
+                )
+        return comments
 
     def publish_review(self, pr_url: PRUrl, review: Review) -> None:
         logger.info("Publishing review to GitLab")

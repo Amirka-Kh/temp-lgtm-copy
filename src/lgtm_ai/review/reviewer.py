@@ -173,11 +173,18 @@ class CodeReviewer:
         else:
             issue_context = None
 
+        if self.config.comments_context:
+            existing_comments = self.context_retriever.get_existing_comments_context(target=pr_url, pr_diff=pr_diff)
+        else:
+            logger.info("Existing comments context is disabled, won't retrieve comments already on the PR")
+            existing_comments = []
+
         review_prompt = prompt_generator.generate_review_prompt(
             pr_diff=pr_diff,
             context=context,
             additional_context=additional_context,
             issue_context=issue_context,
+            existing_comments=existing_comments,
         )
         logger.info("Reviewer Agent is performing the initial review")
         with handle_ai_exceptions():

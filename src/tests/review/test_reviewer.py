@@ -10,7 +10,7 @@ from lgtm_ai.base.exceptions import NothingToReviewError
 from lgtm_ai.base.schemas import PRSource, PRUrl
 from lgtm_ai.config.constants import DEFAULT_AI_MODEL
 from lgtm_ai.config.handler import ResolvedConfig
-from lgtm_ai.git_client.schemas import PRDiff
+from lgtm_ai.git_client.schemas import ExistingReviewComment, PRDiff
 from lgtm_ai.review import CodeReviewer
 from lgtm_ai.review.context import ContextRetriever
 from lgtm_ai.review.exceptions import (
@@ -500,6 +500,73 @@ def test_errors_are_handled_on_reviewer_agent(raised_error: Exception, expected_
         code_reviewer.review(
             target=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab)
         )
+
+
+def _review_with_existing_comments(
+    existing_comments: list[ExistingReviewComment], *, comments_context: bool = True
+) -> list[ModelMessage]:
+    """Run a review against a git client carrying `existing_comments`, and return the captured agent messages."""
+    git_client = MockGitClient(existing_comments=existing_comments)
+    test_agent = get_reviewer_agent_with_settings()
+    test_summary_agent = get_summarizing_agent_with_settings()
+    with (
+        test_agent.override(model=TestModel()),
+        test_summary_agent.override(model=TestModel()),
+        capture_run_messages() as messages,
+    ):
+        CodeReviewer(
+            reviewer_agent=test_agent,
+            summarizing_agent=test_summary_agent,
+            model=mock.Mock(spec=OpenAIChatModel, model_name=DEFAULT_AI_MODEL),
+            git_client=git_client,
+            context_retriever=ContextRetriever(
+                git_client=git_client, issues_client=git_client, httpx_client=mock.Mock()
+            ),
+            config=ResolvedConfig(ai_api_key="", git_api_key="", comments_context=comments_context),
+        ).review(target=PRUrl(full_url="foo", base_url="foo", repo_path="foo", pr_number=1, source=PRSource.gitlab))
+    return messages
+
+
+def test_existing_comments_are_sent_to_the_reviewer(context_retriever: ContextRetriever) -> None:
+    messages = _review_with_existing_comments(
+        [
+            ExistingReviewComment(
+                body="🦉 The retry counter is never reset", author="lgtm", file_path="file-1.txt", line_number=3
+            )
+        ]
+    )
+
+    prompt = _get_user_prompt(messages)
+    assert "EXISTING REVIEW COMMENTS:" in prompt
+    assert "The retry counter is never reset" in prompt
+    assert "you, on an earlier run" in prompt
+
+
+def test_existing_comments_outside_the_diff_are_not_sent(context_retriever: ContextRetriever) -> None:
+    messages = _review_with_existing_comments(
+        [ExistingReviewComment(body="a point on an untouched file", author="dev", file_path="untouched.py")]
+    )
+
+    assert "EXISTING REVIEW COMMENTS:" not in _get_user_prompt(messages)
+
+
+def test_existing_comments_are_not_fetched_when_disabled(context_retriever: ContextRetriever) -> None:
+    messages = _review_with_existing_comments(
+        [ExistingReviewComment(body="🦉 a previous point", author="lgtm", file_path="file-1.txt")],
+        comments_context=False,
+    )
+
+    assert "EXISTING REVIEW COMMENTS:" not in _get_user_prompt(messages)
+
+
+def test_no_existing_comments_section_when_there_are_none(context_retriever: ContextRetriever) -> None:
+    assert "EXISTING REVIEW COMMENTS:" not in _get_user_prompt(_review_with_existing_comments([]))
+
+
+def _get_user_prompt(messages: list[ModelMessage]) -> str:
+    requests = _get_requests_from_messages(messages)
+    user_prompt = next(part for part in requests[0].parts if part.part_kind == "user-prompt")
+    return str(user_prompt.content)
 
 
 def _get_code_reviewer(

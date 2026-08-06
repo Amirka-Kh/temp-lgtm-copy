@@ -2,7 +2,7 @@ from typing import Protocol
 
 from lgtm_ai.ai.schemas import Review, ReviewGuide
 from lgtm_ai.base.schemas import PRUrl
-from lgtm_ai.git_client.schemas import ContextBranch, IssueContent, PRDiff, PRMetadata
+from lgtm_ai.git_client.schemas import ContextBranch, ExistingReviewComment, IssueContent, PRDiff, PRMetadata
 from pydantic import HttpUrl
 
 
@@ -28,4 +28,11 @@ class GitClient(Protocol):
         """Get contents of the file from `file_path` from the given branch.
 
         It should never raise, and instead return None if the file cannot be downloaded.
+        """
+
+    def get_review_comments(self, pr_url: PRUrl) -> list[ExistingReviewComment]:
+        """Get the comments already posted on the PR, oldest first.
+
+        Used to stop the reviewer repeating points that have already been made. It should never raise, and instead
+        return an empty list if the comments cannot be fetched: a review without this context is still worth having.
         """

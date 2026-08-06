@@ -484,6 +484,8 @@ class TestMarkdownFormatter:
             "",
             "- **additional_context**: `({'file_url': 'https://foo.com', 'prompt': 'a prompt', 'context': None},)`",
             "",
+            "- **comments_context**: `True`",
+            "",
             "- **publish**: `False`",
             "",
             "- **output_format**: `pretty`",

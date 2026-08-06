@@ -12,7 +12,8 @@ from lgtm_ai.base.exceptions import LGTMException
 from lgtm_ai.base.schemas import LocalRepository, PRUrl
 from lgtm_ai.git.repository import get_file_contents_from_local_repo
 from lgtm_ai.git_client.base import GitClient
-from lgtm_ai.git_client.schemas import ContextBranch, IssueContent, PRDiff, PRMetadata
+from lgtm_ai.git_client.schemas import ContextBranch, ExistingReviewComment, IssueContent, PRDiff, PRMetadata
+from lgtm_ai.review.comment_context import build_existing_comments_context
 from lgtm_ai.review.schemas import PRCodeContext
 from pydantic import HttpUrl
 
@@ -120,6 +121,21 @@ class ContextRetriever:
                 extra_context.append(context)
 
         return extra_context or None
+
+    def get_existing_comments_context(
+        self, target: PRUrl | LocalRepository, pr_diff: PRDiff
+    ) -> list[ExistingReviewComment]:
+        """Get the comments already on the PR, condensed, so the reviewer does not repeat points already made.
+
+        A local repository has no PR to carry comments, so it always yields nothing.
+        """
+        if not self._git_client or not isinstance(target, PRUrl):
+            return []
+        logger.info("Fetching existing comments from the PR")
+        return build_existing_comments_context(
+            self._git_client.get_review_comments(target),
+            changed_files=pr_diff.changed_files,
+        )
 
     def get_issues_context(
         self, issues_url: HttpUrl, issues_regex: str, pr_metadata: PRMetadata

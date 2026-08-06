@@ -389,6 +389,19 @@ lgtm recognizes the common self-hosted model families from the name passed to `-
 schema lgtm sends to what these models handle well. Naming the model after its family (e.g. `qwen3.6-flash` rather than
 `my-model`) therefore gives better results.
 
+### Avoiding repeated comments
+
+When you re-review a PR, lgtm sends the comments already posted on it to the reviewer so it does not raise the same points again. This covers its own comments from earlier runs as well as those written by humans, and a thread marked resolved is flagged so the point is not reopened.
+
+Comment history grows without limit, so those comments are condensed before being sent rather than pasted in whole:
+
+- **Metadata footers, quoted snippets and suggestion blocks are stripped.** They are the bulk of an lgtm comment and add nothing — the reviewer already has the diff and the file contents. This alone cuts a typical comment by about 60%.
+- **Comments on files outside the current diff are dropped.** The reviewer cannot comment there, so it cannot repeat them.
+- **Each comment is truncated** to its essential point, and comments left with no content after condensing are dropped entirely.
+- **The section is capped** at 50 comments and 15,000 characters. When the cap binds, lgtm's own earlier comments are kept first — those are the ones it would otherwise write again — and what was dropped is written to the log.
+
+In practice a PR with hundreds of comments contributes roughly 15,000 characters (~4k tokens), not the several hundred thousand its raw history would. Set `comments_context = false` (or pass `--no-comments-context`) to turn the whole thing off and skip the extra API calls.
+
 ### CI/CD Integration
 
 lgtm is meant to be integrated into your CI/CD pipeline, so that PR authors can choose to request reviews by running the necessary pipeline step.
@@ -458,6 +471,7 @@ When it comes to preference for selecting options, lgtm follows this preference 
 | categories           | Review Only          | 🟢 Optional                   | Review categories. Defaults to all (`Quality`, `Correctness`, `Testing`, `Security`). |
 | additional_context   | Review Only          | 🟢 Optional                   | Extra context for the LLM (array of prompts/paths/URLs). Can't be given through the CLI |
 | compare              | Review Only          | 🟢 Optional                   | If reviewing local changes, what to compare against (branch, commit, range, etc.). CLI only. |
+| comments_context     | Review Only          | 🟢 Optional                   | Send the comments already on the PR so the reviewer doesn't repeat itself. Default: true.    |
 | issues_url           | Issues Integration   | 🟢 Optional                   | Enables issue context. If set, `issues_platform` becomes required.                 |
 | issues_platform        | Issues Integration   | 🟡 Conditionally required     | Required if `issues_url` is set.                                                 |
 | issues_regex         | Issues Integration   | 🟢 Optional                   | Regex for issue ID extraction. Defaults to conventional commit compatible regex. |
@@ -489,6 +503,7 @@ These options are only used when performing reviews through the command `lgtm re
 - **categories**: lgtm will, by default, evaluate several areas of the given PR (`Quality`, `Correctness`, `Testing`, and `Security`). You can choose any subset of these (e.g., if you are only interested in `Correctness`, you can configure `categories` so that lgtm does not evaluate the other missing areas).
 - **additional_context**: TOML array of extra context to send to the LLM. It supports setting the context directly in the `context` field, passing a relative file path so that lgtm downloads it from the repository, or passing any URL from which to download the context. Each element of the array must contain `prompt`, and either `context` (directly injecting context) or `file_url` (for directing lgtm to download it from there).
 - **compare**: When reviewing local changes (the positional argument to `lgtm` is a valid `git` path), you can choose what to compare against to generate a git diff. You can pass branch names, commits, etc. Default is `HEAD`. Only available as a CLI option.
+- **comments_context**: Send the comments already on the PR to the reviewer so it does not repeat points that have already been made — its own from an earlier run, and human ones. Default is `true`; disable with `comments_context = false` or `--no-comments-context`. See [Avoiding repeated comments](#avoiding-repeated-comments).
 
 #### Issues Integration options
 

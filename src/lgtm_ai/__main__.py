@@ -156,6 +156,11 @@ def _common_options[**P, T](func: Callable[P, T]) -> Callable[P, T]:
     help="If reviewing a local repository, what to compare against (branch, commit, or HEAD for working dir). Default: HEAD",
 )
 @click.option(
+    "--comments-context/--no-comments-context",
+    default=None,
+    help="Send the comments already on the PR to the reviewer so it does not repeat points that have already been made. Defaults to enabled.",
+)
+@click.option(
     "--context",
     "additional_context",
     multiple=True,
