@@ -5,11 +5,12 @@ import pytest
 from lgtm_ai.ai.schemas import AdditionalContext
 from lgtm_ai.base.schemas import PRSource, PRUrl
 from lgtm_ai.config.constants import DEFAULT_ISSUE_REGEX
+from lgtm_ai.git.parser import DiffFileMetadata, DiffResult, ModifiedLine
 from lgtm_ai.git_client.base import GitClient
 from lgtm_ai.git_client.github import GitHubClient
 from lgtm_ai.git_client.gitlab import GitlabClient
 from lgtm_ai.git_client.schemas import PRDiff, PRMetadata
-from lgtm_ai.review.context import ContextRetriever, IssuesClient
+from lgtm_ai.review.context import ContextRetriever, IssuesClient, select_files_for_context
 from lgtm_ai.review.schemas import PRCodeContext, PRContextFileContents
 from tests.review.utils import MockGitClient
 
@@ -286,3 +287,84 @@ class TestIssueContext:
 
         issue_code = context_retriever._extract_issue_code_from_metadata(metadata, DEFAULT_ISSUE_REGEX)
         assert issue_code == expected
+
+
+def _diff_entry(path: str, *, with_changes: bool = True) -> DiffResult:
+    return DiffResult(
+        metadata=DiffFileMetadata(new_file=False, deleted_file=False, renamed_file=False, new_path=path, old_path=path),
+        modified_lines=(
+            [ModifiedLine(line="x", line_number=1, relative_line_number=1, modification_type="added")]
+            if with_changes
+            else []
+        ),
+    )
+
+
+def _pr_diff(changed_files: list[str], diff: list[DiffResult]) -> PRDiff:
+    return PRDiff(id=1, changed_files=changed_files, diff=diff, target_branch="main", source_branch="feature")
+
+
+class TestSelectFilesForContext:
+    def test_keeps_changed_source_files(self) -> None:
+        pr_diff = _pr_diff(["a.py", "b.py"], [_diff_entry("a.py"), _diff_entry("b.py")])
+
+        assert select_files_for_context(pr_diff) == ["a.py", "b.py"]
+
+    @pytest.mark.parametrize(
+        "file_name",
+        ["logo.png", "photo.JPEG", "icon.svg", "clip.mp4", "font.woff2", "bundle.zip", "lib.so", "manual.pdf"],
+    )
+    def test_drops_files_whose_contents_cannot_be_reviewed(self, file_name: str) -> None:
+        """Fetching these costs two API round trips and always ends in a decode failure."""
+        pr_diff = _pr_diff(["a.py", file_name], [_diff_entry("a.py"), _diff_entry(file_name)])
+
+        assert select_files_for_context(pr_diff) == ["a.py"]
+
+    def test_drops_files_with_no_modified_lines(self) -> None:
+        """A pure rename or a mode-only change has nothing in it for the reviewer to comment on."""
+        pr_diff = _pr_diff(["a.py", "renamed.py"], [_diff_entry("a.py"), _diff_entry("renamed.py", with_changes=False)])
+
+        assert select_files_for_context(pr_diff) == ["a.py"]
+
+    def test_keeps_files_the_diff_says_nothing_about(self) -> None:
+        """The git clients skip diffs they fail to parse; that is not the same as the file being unchanged."""
+        pr_diff = _pr_diff(["a.py", "unparsed.py"], [_diff_entry("a.py")])
+
+        assert select_files_for_context(pr_diff) == ["a.py", "unparsed.py"]
+
+    def test_drops_excluded_files_before_fetching_them(self) -> None:
+        """Filtering after the fetch, as the prompt generator does, still pays for the download."""
+        pr_diff = _pr_diff(["a.py", "poetry.lock"], [_diff_entry("a.py"), _diff_entry("poetry.lock")])
+
+        assert select_files_for_context(pr_diff, exclude=("poetry.lock",)) == ["a.py"]
+
+    def test_excludes_by_glob(self) -> None:
+        pr_diff = _pr_diff(["a.py", "docs/readme.md"], [_diff_entry("a.py"), _diff_entry("docs/readme.md")])
+
+        assert select_files_for_context(pr_diff, exclude=("*.md",)) == ["a.py"]
+
+    def test_no_changed_files(self) -> None:
+        assert select_files_for_context(_pr_diff([], [])) == []
+
+
+class TestCodeContextSkipsUnfetchableFiles:
+    def test_images_are_never_requested_from_the_git_client(self) -> None:
+        git_client = mock.Mock(spec=GitClient)
+        git_client.get_file_contents.return_value = "contents"
+        retriever = ContextRetriever(
+            git_client=git_client, issues_client=None, httpx_client=mock.Mock(spec=httpx.Client)
+        )
+        pr_url = PRUrl(
+            full_url="https://example.com/repo/pull/1",
+            base_url="https://example.com",
+            repo_path="repo",
+            pr_number=1,
+            source=PRSource.github,
+        )
+        pr_diff = _pr_diff(["a.py", "logo.png"], [_diff_entry("a.py"), _diff_entry("logo.png")])
+
+        context = retriever.get_code_context(pr_url, pr_diff)
+
+        assert [fc.file_path for fc in context.file_contents] == ["a.py"]
+        requested = [call.kwargs["file_path"] for call in git_client.get_file_contents.call_args_list]
+        assert requested == ["a.py"]

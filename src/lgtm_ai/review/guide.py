@@ -37,7 +37,7 @@ class ReviewGuideGenerator:
         if not self.git_client:
             raise ValueError("Git client is not configured, cannot generate review guide")
         pr_diff = self.git_client.get_diff_from_url(pr_url)
-        context = self.context_retriever.get_code_context(pr_url, pr_diff)
+        context = self.context_retriever.get_code_context(pr_url, pr_diff, exclude=self.config.exclude)
         metadata = self.git_client.get_pr_metadata(pr_url)
         usage_limits = UsageLimits(input_tokens_limit=self.config.ai_input_tokens_limit)
 

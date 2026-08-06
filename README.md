@@ -389,6 +389,24 @@ lgtm recognizes the common self-hosted model families from the name passed to `-
 schema lgtm sends to what these models handle well. Naming the model after its family (e.g. `qwen3.6-flash` rather than
 `my-model`) therefore gives better results.
 
+### What lgtm sends as code context
+
+lgtm does **not** read your whole repository. Alongside the diff it sends the full contents of the changed files, so a
+human-like reviewer can see the code around each change. Only files it can actually review are fetched:
+
+- **Files excluded by `exclude` are never downloaded.** The filter runs before the fetch, not after.
+- **Files whose contents cannot be read are skipped** — images (including `.svg`), video, audio, fonts, archives,
+  compiled artifacts and binary documents. Fetching one of these used to cost two API round trips (the source branch,
+  then the target branch as a fallback) and always ended in a decode failure.
+- **Files the diff shows no modified lines for are skipped** — binary files, pure renames and mode-only changes. There
+  is nothing in them for the reviewer to comment on. A file the diff says *nothing* about is still fetched: the git
+  clients skip patches they fail to parse, and that is not the same as the file being unchanged.
+
+What was skipped, and why, is written to the log at `INFO`.
+
+If reviews still overflow your model's context window, `exclude` is the biggest lever — it drops both the file
+contents and the diff for those paths.
+
 ### Avoiding repeated comments
 
 When you re-review a PR, lgtm sends the comments already posted on it to the reviewer so it does not raise the same points again. This covers its own comments from earlier runs as well as those written by humans, and a thread marked resolved is flagged so the point is not reopened.

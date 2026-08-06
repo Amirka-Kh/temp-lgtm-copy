@@ -1,7 +1,13 @@
 import fnmatch
 import pathlib
 
+from lgtm_ai.base.constants import NON_REVIEWABLE_EXTENSIONS
 from lgtm_ai.base.schemas import PRSource
+
+
+def is_non_reviewable_file(file_name: str) -> bool:
+    """Whether the file's contents are of no use as reading context for the AI reviewer."""
+    return pathlib.Path(file_name).suffix.lower() in NON_REVIEWABLE_EXTENSIONS
 
 
 def file_matches_any_pattern(file_name: str, patterns: tuple[str, ...]) -> bool:
